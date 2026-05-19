@@ -1599,6 +1599,7 @@ function EventsPage({
   const [addInfo, setAddInfo] = useState<string | null>(null)
 
   const [detailsError, setDetailsError] = useState<string | null>(null)
+  const [confirmDeleteEvent, setConfirmDeleteEvent] = useState<EvenementRow | null>(null)
   const [convocationsByEvent, setConvocationsByEvent] = useState<Record<string, EventConvocationRow[]>>({})
   const [presencesByEvent, setPresencesByEvent] = useState<Record<string, PresenceRow[]>>({})
   const [vehiclesByEvent, setVehiclesByEvent] = useState<Record<string, EventVehicleRow[]>>({})
@@ -1812,19 +1813,21 @@ function EventsPage({
   const deleteEvent = async (event: EvenementRow) => {
     if (!supabase) return
     if (!canManageEvents) return
+    setConfirmDeleteEvent(event)
+  }
 
-    const summary = `${event.type}${event.infos ? ` - ${event.infos}` : ''}`
-    const confirmed = window.confirm(`Supprimer cet evenement ?\n\n${summary}`)
-    if (!confirmed) return
-
+  const executeDeleteEvent = async () => {
+    if (!supabase || !confirmDeleteEvent) return
     setDetailsError(null)
 
-    const { error } = await supabase.from('evenements').delete().eq('id', event.id)
+    const { error } = await supabase.from('evenements').delete().eq('id', confirmDeleteEvent.id)
     if (error) {
       setDetailsError(formatSupabaseError(error))
+      setConfirmDeleteEvent(null)
       return
     }
 
+    setConfirmDeleteEvent(null)
     await refreshEvents()
   }
 
@@ -2559,6 +2562,62 @@ function EventsPage({
           )
         })}
       </div>
+
+      {confirmDeleteEvent && (
+        <div className="modal-overlay" style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: 'rgba(0, 0, 0, 0.75)',
+          display: 'grid',
+          placeItems: 'center',
+          zIndex: 1000,
+          padding: '1.5rem',
+          backdropFilter: 'blur(4px)',
+        }}>
+          <div className="panel" style={{
+            maxWidth: '400px',
+            width: '100%',
+            padding: '1.5rem',
+            background: 'var(--surface-color, #0f172a)',
+            borderRadius: '1rem',
+            border: '1px solid rgba(0, 243, 255, 0.35)',
+            boxShadow: '0 0 20px rgba(0, 243, 255, 0.15)',
+            display: 'grid',
+            gap: '1rem'
+          }}>
+            <h3 style={{ margin: 0, color: 'var(--text-color, #f8fafc)' }}>Confirmer la suppression</h3>
+            <p className="muted" style={{ margin: 0 }}>
+              Voulez-vous vraiment supprimer cet événement ?
+            </p>
+            <div style={{ padding: '0.75rem', background: 'rgba(255, 255, 255, 0.05)', borderRadius: '0.5rem', fontSize: '0.9rem' }}>
+              <strong>{confirmDeleteEvent.type === 'match' ? '⚽ Match' : '🏃 Entraînement'}</strong>
+              {confirmDeleteEvent.lieu && <p style={{ margin: '0.25rem 0 0 0' }}>📍 {confirmDeleteEvent.lieu}</p>}
+              {confirmDeleteEvent.infos && <p style={{ margin: '0.25rem 0 0 0', fontStyle: 'italic' }}>{confirmDeleteEvent.infos}</p>}
+            </div>
+            <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'end', marginTop: '0.5rem' }}>
+              <button 
+                type="button" 
+                className="link-button" 
+                onClick={() => setConfirmDeleteEvent(null)}
+                style={{ padding: '0.5rem 1rem' }}
+              >
+                Annuler
+              </button>
+              <button 
+                type="button" 
+                className="primary-button" 
+                onClick={() => void executeDeleteEvent()}
+                style={{ padding: '0.5rem 1.25rem', background: '#ef4444', borderColor: '#ef4444' }}
+              >
+                Supprimer
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   )
 }

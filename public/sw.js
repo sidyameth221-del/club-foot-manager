@@ -16,9 +16,11 @@ self.addEventListener('activate', (event) => {
 })
 
 self.addEventListener('fetch', (event) => {
-  if (event.request.method !== 'GET') {
+  // Intercepte uniquement les requêtes GET de notre propre site (pas Supabase API)
+  if (event.request.method !== 'GET' || !event.request.url.startsWith(self.location.origin)) {
     return
   }
+
 
   event.respondWith(
     caches.match(event.request).then((cached) => {
