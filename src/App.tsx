@@ -819,12 +819,23 @@ function DashboardPage({
   role,
   equipe,
   userId,
+  authorName,
 }: {
   club: ClubRow | null
   role: Role | null
   equipe: EquipeRow | null
   userId: string | null
+  authorName: string | null
 }) {
+  const categoryIcons: Record<string, string> = {
+    Technique: '⚽',
+    Mental: '🧠',
+    Tactique: '🗺️',
+    Physique: '💪',
+    Perceptif: '👁️',
+    Cognitif: '🔵',
+  }
+
   const [stats, setStats] = useState({
     players: 0,
     events: 0,
@@ -4648,7 +4659,7 @@ function AppShell() {
           path="/club-setup"
           element={userId ? <ClubSetupPage userId={userId} role={role} needsClubSetup={needsClubSetup} /> : <LoginPage />}
         />
-        <Route path="/dashboard" element={<DashboardPage club={club} role={role} equipe={equipe} userId={userId} />} />
+        <Route path="/dashboard" element={<DashboardPage club={club} role={role} equipe={equipe} userId={userId} authorName={authorName} />} />
         <Route path="/team" element={<TeamPage club={club} equipe={equipe} role={role} />} />
         <Route path="/events" element={<EventsPage equipe={equipe} userId={userId} club={club} role={role} />} />
         <Route path="/chat" element={<ChatPage club={club} authorName={authorName} userId={userId} role={role} equipe={equipe} />} />
