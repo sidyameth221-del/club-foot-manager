@@ -486,11 +486,236 @@ input:focus {
     linear-gradient(180deg, #115238, #0b3a27);
 }
 
-.pitch-area {
+/* Pitch Viewport wrapper to support dynamic zoom scales with clean overflow clipping */
+.pitch-viewport {
   position: relative;
   height: 420px;
   margin: 1rem;
+  overflow: hidden;
+  border-radius: 12px;
+  border: 1px solid rgba(0, 243, 255, 0.25);
+  background: rgba(0, 16, 36, 0.45);
+}
+
+.pitch-area {
+  position: relative;
+  width: 100%;
+  height: 100%;
   touch-action: none;
+  transition: transform 0.45s cubic-bezier(0.25, 0.8, 0.25, 1);
+}
+
+.pitch-area.zoom-full {
+  transform: scale(1);
+  transform-origin: center center;
+}
+
+.pitch-area.zoom-half {
+  transform: scale(1.6);
+  transform-origin: right center;
+}
+
+.pitch-area.zoom-quarter-top {
+  transform: scale(1.75);
+  transform-origin: right 28%;
+}
+
+.pitch-area.zoom-quarter-bottom {
+  transform: scale(1.75);
+  transform-origin: right 72%;
+}
+
+/* Anti-distortion / counter-scaling overrides for player markers */
+.pitch-area.zoom-full .player-dot {
+  transform: translate(-50%, -50%) scale(1) !important;
+}
+
+.pitch-area.zoom-half .player-dot {
+  transform: translate(-50%, -50%) scale(0.625) !important;
+}
+
+.pitch-area.zoom-quarter-top .player-dot,
+.pitch-area.zoom-quarter-bottom .player-dot {
+  transform: translate(-50%, -50%) scale(0.571) !important;
+}
+
+/* Fullscreen tactical board container styles */
+.strategy-layout-wrapper.is-fullscreen {
+  position: fixed !important;
+  inset: 0 !important;
+  z-index: 9999 !important;
+  background: #040d1a !important;
+  margin: 0 !important;
+  padding: 1.5rem !important;
+  display: flex !important;
+  flex-direction: row !important;
+  gap: 1.5rem !important;
+  width: 100vw !important;
+  height: 100vh !important;
+}
+
+.strategy-layout-wrapper.is-fullscreen .tactical-board {
+  flex: 1.8 !important;
+  height: 100% !important;
+  min-height: auto !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+.strategy-layout-wrapper.is-fullscreen .pitch-viewport {
+  flex: 1 !important;
+  height: auto !important;
+  margin-bottom: 1rem !important;
+}
+
+.strategy-layout-wrapper.is-fullscreen .strategy-controls-panel {
+  flex: 0.8 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 1rem !important;
+  overflow-y: auto !important;
+  max-height: calc(100vh - 3rem) !important;
+  background: rgba(0, 16, 36, 0.45) !important;
+  border-radius: 12px !important;
+  border: 1px solid rgba(0, 243, 255, 0.2) !important;
+  padding: 1.25rem !important;
+}
+
+/* Adjustments for normal display controls panel wrapper */
+.strategy-controls-panel {
+  display: grid;
+  gap: 1rem;
+  align-content: start;
+}
+
+/* Strategy Lock overlay for players/parents when not shared */
+.strategy-locked {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  background: rgba(0, 16, 36, 0.65);
+  backdrop-filter: blur(12px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1.25rem;
+  padding: 2rem;
+  text-align: center;
+  border-radius: 12px;
+}
+
+.strategy-locked-icon {
+  width: 70px;
+  height: 70px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, rgba(255, 0, 85, 0.2), rgba(0, 243, 255, 0.2));
+  border: 2px solid var(--neon-cyan);
+  display: grid;
+  place-items: center;
+  box-shadow: 0 0 25px rgba(0, 243, 255, 0.35);
+  color: var(--neon-cyan);
+  animation: pulse-cyan 2s infinite ease-in-out;
+}
+
+.strategy-locked h3 {
+  margin: 0;
+  font-family: var(--font-title);
+  font-size: 1.4rem;
+  letter-spacing: 0.05em;
+  color: #fff;
+  text-shadow: 0 0 10px rgba(0, 243, 255, 0.5);
+}
+
+.strategy-locked p {
+  margin: 0;
+  max-width: 20rem;
+  font-size: 0.95rem;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+@keyframes pulse-cyan {
+  0%, 100% {
+    box-shadow: 0 0 15px rgba(0, 243, 255, 0.25);
+    border-color: rgba(0, 243, 255, 0.6);
+  }
+  50% {
+    box-shadow: 0 0 30px rgba(0, 243, 255, 0.55);
+    border-color: var(--neon-cyan);
+  }
+}
+
+/* Preset color selection chips */
+.color-presets {
+  display: flex;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+
+.color-preset-chip {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  cursor: pointer;
+  border: 2px solid rgba(255, 255, 255, 0.15);
+  transition: transform 0.2s, border-color 0.2s;
+}
+
+.color-preset-chip:hover {
+  transform: scale(1.15);
+}
+
+.color-preset-chip.active {
+  border-color: #fff;
+  box-shadow: 0 0 10px currentColor;
+}
+
+/* Sharing toggle switch premium styling */
+.premium-switch {
+  position: relative;
+  display: inline-block;
+  width: 48px;
+  height: 24px;
+}
+
+.premium-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.premium-slider {
+  position: absolute;
+  cursor: pointer;
+  inset: 0;
+  background-color: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(0, 243, 255, 0.25);
+  border-radius: 34px;
+  transition: 0.3s;
+}
+
+.premium-slider:before {
+  position: absolute;
+  content: "";
+  height: 16px;
+  width: 16px;
+  left: 3px;
+  bottom: 3px;
+  background-color: var(--muted);
+  border-radius: 50%;
+  transition: 0.3s;
+}
+
+input:checked + .premium-slider {
+  background-color: rgba(110, 255, 172, 0.2);
+  border-color: var(--neon-green);
+}
+
+input:checked + .premium-slider:before {
+  transform: translateX(24px);
+  background-color: var(--neon-green);
+  box-shadow: 0 0 8px var(--neon-green);
 }
 
 .pitch-lines {
@@ -499,13 +724,8 @@ input:focus {
   border: 2px solid rgba(109, 255, 178, 0.55);
 }
 
-.pitch-lines::before,
-.pitch-lines::after {
-  content: '';
+.pitch-lines .line-center {
   position: absolute;
-}
-
-.pitch-lines::before {
   left: 50%;
   top: 0;
   transform: translateX(-50%);
@@ -514,14 +734,154 @@ input:focus {
   background: rgba(109, 255, 178, 0.55);
 }
 
-.pitch-lines::after {
+.pitch-lines .circle-center {
+  position: absolute;
   left: 50%;
   top: 50%;
   transform: translate(-50%, -50%);
-  width: 95px;
-  height: 95px;
+  width: 80px;
+  height: 80px;
   border-radius: 50%;
   border: 2px solid rgba(109, 255, 178, 0.55);
+}
+
+.pitch-lines .spot-center {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(109, 255, 178, 0.85);
+}
+
+/* Penalty boxes */
+.pitch-lines .penalty-box {
+  position: absolute;
+  top: 22%;
+  height: 56%;
+  width: 16.5%;
+  border: 2px solid rgba(109, 255, 178, 0.55);
+}
+.pitch-lines .penalty-box.left {
+  left: 0;
+  border-left: none;
+}
+.pitch-lines .penalty-box.right {
+  right: 0;
+  border-right: none;
+}
+
+/* Goal boxes */
+.pitch-lines .goal-box {
+  position: absolute;
+  top: 36%;
+  height: 28%;
+  width: 5.5%;
+  border: 2px solid rgba(109, 255, 178, 0.55);
+}
+.pitch-lines .goal-box.left {
+  left: 0;
+  border-left: none;
+}
+.pitch-lines .goal-box.right {
+  right: 0;
+  border-right: none;
+}
+
+/* Penalty spots */
+.pitch-lines .penalty-spot {
+  position: absolute;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(109, 255, 178, 0.85);
+  transform: translate(-50%, -50%);
+}
+.pitch-lines .penalty-spot.left {
+  left: 11%;
+}
+.pitch-lines .penalty-spot.right {
+  right: 11%;
+  transform: translate(50%, -50%);
+}
+
+/* Penalty arcs (D-box) */
+.pitch-lines .penalty-arc {
+  position: absolute;
+  top: 50%;
+  width: 7.5%;
+  height: 18%;
+  border: 2px solid rgba(109, 255, 178, 0.55);
+  transform: translateY(-50%);
+}
+.pitch-lines .penalty-arc.left {
+  left: 16.5%;
+  border-left: none;
+  border-radius: 0 100px 100px 0;
+}
+.pitch-lines .penalty-arc.right {
+  right: 16.5%;
+  border-right: none;
+  border-radius: 100px 0 0 100px;
+}
+
+/* Corner arcs */
+.pitch-lines .corner-arc {
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(109, 255, 178, 0.55);
+}
+.pitch-lines .corner-arc.top-left {
+  left: 0;
+  top: 0;
+  border-top: none;
+  border-left: none;
+  border-bottom-right-radius: 100%;
+}
+.pitch-lines .corner-arc.bottom-left {
+  left: 0;
+  bottom: 0;
+  border-bottom: none;
+  border-left: none;
+  border-top-right-radius: 100%;
+}
+.pitch-lines .corner-arc.top-right {
+  right: 0;
+  top: 0;
+  border-top: none;
+  border-right: none;
+  border-bottom-left-radius: 100%;
+}
+.pitch-lines .corner-arc.bottom-right {
+  right: 0;
+  bottom: 0;
+  border-bottom: none;
+  border-right: none;
+  border-top-left-radius: 100%;
+}
+
+/* Goal posts */
+.pitch-lines .goal-post {
+  position: absolute;
+  top: 40%;
+  height: 20%;
+  width: 1.5%;
+  border: 2px solid rgba(109, 255, 178, 0.55);
+  background: rgba(5, 22, 43, 0.35);
+}
+.pitch-lines .goal-post.left {
+  left: -1.5%;
+  border-right: none;
+  border-radius: 4px 0 0 4px;
+}
+.pitch-lines .goal-post.right {
+  right: -1.5%;
+  border-left: none;
+  border-radius: 0 4px 4px 0;
 }
 
 .player-dot {

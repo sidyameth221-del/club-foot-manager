@@ -19,7 +19,7 @@ create table if not exists equipes (
   id uuid primary key default gen_random_uuid(),
   club_id uuid not null references clubs(id) on delete cascade,
   nom text not null,
-  categorie text not null check (categorie in ('U9', 'U12', 'U18', 'U21', 'Seniors')),
+  categorie text not null,
   code_invitation text not null unique,
   created_at timestamptz not null default now()
 );
@@ -531,7 +531,10 @@ using (
       or (me.role = 'coach' and me.equipe_id is not null and profiles.equipe_id = me.equipe_id)
       or (
         me.role = 'parent'
-        and profiles.equipe_id in (select public.my_children_equipes())
+        and (
+          profiles.equipe_id in (select public.my_children_equipes())
+          or profiles.id in (select child_id from public.parent_children where parent_id = auth.uid())
+        )
       )
       or (profiles.id = auth.uid())
   )
@@ -1379,7 +1382,11 @@ $$;
 
 grant execute on function public.set_chat_restricted(uuid, boolean) to authenticated;
 
-create or replace function public.reset_chat(p_club_id uuid)
+-- Drop old overloaded reset_chat functions to clean up schema and avoid PostgREST conflicts
+drop function if exists public.reset_chat(uuid);
+drop function if exists public.reset_chat(uuid, uuid);
+
+create or replace function public.reset_chat_v2(p_club_id uuid, p_equipe_id uuid default null)
 returns void
 language plpgsql
 security definer
@@ -1389,42 +1396,47 @@ as $$
 declare
   v_role text;
   v_club_id uuid;
+  v_equipe_id uuid;
 begin
-  select role, club_id into v_role, v_club_id
+  select role, club_id, equipe_id into v_role, v_club_id, v_equipe_id
   from public.profiles
   where id = auth.uid();
 
+  -- Super admin can reset any general or team chat
   if v_role = 'super_admin' then
-    delete from public.chat_messages where club_id = p_club_id;
+    if p_equipe_id is not null then
+      delete from public.chat_messages where club_id = p_club_id and equipe_id = p_equipe_id;
+    else
+      delete from public.chat_messages where club_id = p_club_id and equipe_id is null;
+    end if;
     return;
   end if;
 
-  if v_role in ('admin') and v_club_id = p_club_id then
-    delete from public.chat_messages where club_id = p_club_id;
+  -- Admin can reset any general or team chat in their club
+  if v_role = 'admin' and v_club_id = p_club_id then
+    if p_equipe_id is not null then
+      delete from public.chat_messages where club_id = p_club_id and equipe_id = p_equipe_id;
+    else
+      delete from public.chat_messages where club_id = p_club_id and equipe_id is null;
+    end if;
     return;
   end if;
 
-  raise exception 'not allowed';
+  -- Coach can only reset their own team chat
+  if v_role = 'coach' and v_club_id = p_club_id and p_equipe_id is not null and v_equipe_id = p_equipe_id then
+    delete from public.chat_messages where club_id = p_club_id and equipe_id = p_equipe_id;
+    return;
+  end if;
+
+  raise exception 'Unauthorized to reset this chat';
 end;
 $$;
 
-grant execute on function public.reset_chat(uuid) to authenticated;
+grant execute on function public.reset_chat_v2(uuid, uuid) to authenticated;
 
 -- Ensure the categorie constraint exists even if the table already existed.
-do $$
-begin
-  if not exists (
-    select 1
-    from pg_constraint c
-    join pg_class t on t.oid = c.conrelid
-    where t.relname = 'equipes'
-      and c.conname = 'equipes_categorie_check'
-  ) then
-    alter table equipes
-      add constraint equipes_categorie_check
-      check (categorie in ('U9', 'U12', 'U18', 'U21', 'Seniors'));
-  end if;
-end $$;
+-- Remove check constraint on equipes categories to allow dynamic category creation
+alter table equipes drop constraint if exists equipes_categorie_check;
 
 -- invitation_codes:
 -- - super_admin: manage all
@@ -1554,12 +1566,19 @@ with check (
   )
 );
 
--- tests_physiques: user can read their own test rows
+-- tests_physiques: user can read their own test rows or parents can read their children's tests
 drop policy if exists "tests_select_own" on tests_physiques;
 create policy "tests_select_own" on tests_physiques
 for select
 to authenticated
-using (profile_id = auth.uid());
+using (
+  profile_id = auth.uid()
+  or exists (
+    select 1
+    from public.parent_children pc
+    where pc.parent_id = auth.uid() and pc.child_id = tests_physiques.profile_id
+  )
+);
 
 -- tests_physiques: coach/admin can read tests in their scope
 drop policy if exists "tests_select_scope" on tests_physiques;
@@ -1846,7 +1865,62 @@ using (
   )
 );
 
--- player_competency_levels: player can read own level; coach/admin can read team scope
+-- competency_framework: allow insertion by admins/coaches within their club
+drop policy if exists "competency_framework_insert" on competency_framework;
+create policy "competency_framework_insert" on competency_framework
+for insert
+to authenticated
+with check (
+  exists (
+    select 1
+    from public.my_profile() me
+    where
+      me.role = 'super_admin'
+      or (me.role in ('admin', 'coach') and me.club_id is not null and club_id = me.club_id)
+  )
+);
+
+-- competency_framework: allow updates by admins/coaches within their club
+drop policy if exists "competency_framework_update" on competency_framework;
+create policy "competency_framework_update" on competency_framework
+for update
+to authenticated
+using (
+  exists (
+    select 1
+    from public.my_profile() me
+    where
+      me.role = 'super_admin'
+      or (me.role in ('admin', 'coach') and me.club_id is not null and competency_framework.club_id = me.club_id)
+  )
+)
+with check (
+  exists (
+    select 1
+    from public.my_profile() me
+    where
+      me.role = 'super_admin'
+      or (me.role in ('admin', 'coach') and me.club_id is not null and competency_framework.club_id = me.club_id)
+  )
+);
+
+-- competency_framework: allow deletion by admins/coaches within their club
+drop policy if exists "competency_framework_delete" on competency_framework;
+create policy "competency_framework_delete" on competency_framework
+for delete
+to authenticated
+using (
+  exists (
+    select 1
+    from public.my_profile() me
+    where
+      me.role = 'super_admin'
+      or (me.role in ('admin', 'coach') and me.club_id is not null and competency_framework.club_id = me.club_id)
+  )
+);
+
+
+-- player_competency_levels: player can read own level; coach/admin can read team scope; parents can read their children's levels
 drop policy if exists "player_competency_levels_select_own" on player_competency_levels;
 create policy "player_competency_levels_select_own" on player_competency_levels
 for select
@@ -1861,6 +1935,11 @@ using (
       me.role = 'super_admin'
       or (me.role = 'admin' and me.club_id is not null and p.club_id = me.club_id)
       or (me.role = 'coach' and me.equipe_id is not null and p.equipe_id = me.equipe_id)
+  )
+  or exists (
+    select 1
+    from public.parent_children pc
+    where pc.parent_id = auth.uid() and pc.child_id = player_competency_levels.profile_id
   )
 );
 

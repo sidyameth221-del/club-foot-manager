@@ -1,4 +1,4 @@
-import { type FormEvent, type PointerEvent, useEffect, useMemo, useRef, useState } from 'react'
+import { type FormEvent, type PointerEvent, useEffect, useMemo, useRef, useState, Component, ReactNode } from 'react'
 import { NavLink, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import type { RealtimeChannel } from '@supabase/supabase-js'
 import { supabase } from './lib/supabase'
@@ -43,6 +43,8 @@ type EquipeRow = {
   id: string
   nom: string
   categorie: string
+  strategy_shared?: boolean
+  strategy_zoom?: string
 }
 
 type EvenementRow = {
@@ -93,6 +95,7 @@ type TacticalSlotRow = {
   x: number
   y: number
   profile_id: string | null
+  color: string
   profiles?: { nom?: string } | null
 }
 
@@ -284,6 +287,7 @@ function getClubSlugFromHost() {
 }
 
 function slugify(input: string) {
+  if (!input) return ''
   return input
     .trim()
     .toLowerCase()
@@ -820,12 +824,20 @@ function DashboardPage({
   equipe,
   userId,
   authorName,
+  parentChildren,
+  activeChildId,
+  setActiveChildId,
+  refreshParentChildren,
 }: {
   club: ClubRow | null
   role: Role | null
   equipe: EquipeRow | null
   userId: string | null
   authorName: string | null
+  parentChildren: Array<{ id: string; nom: string; equipe_id: string | null; team_name: string; is_approved: boolean }>
+  activeChildId: string
+  setActiveChildId: (id: string) => void
+  refreshParentChildren: (userId?: string, role?: string | null) => Promise<void>
 }) {
   const categoryIcons: Record<string, string> = {
     Technique: '⚽',
@@ -844,7 +856,6 @@ function DashboardPage({
   const [nextEvent, setNextEvent] = useState<EvenementRow | null>(null)
   const [myLevels, setMyLevels] = useState<any[]>([])
 
-  const [myChildren, setMyChildren] = useState<any[]>([])
   const [pendingProfiles, setPendingProfiles] = useState<any[]>([])
   const [adminTeams, setAdminTeams] = useState<any[]>([])
   
@@ -874,9 +885,18 @@ function DashboardPage({
         .order('date')
         .limit(1)
 
-      if (role !== 'admin' && equipe?.id) {
-        eventQuery = eventQuery.eq('equipe_id', equipe.id)
+      let targetEquipeId = equipe?.id
+      if (role === 'parent') {
+        const activeChild = parentChildren.find(c => c.id === activeChildId)
+        targetEquipeId = activeChild?.equipe_id || null
       }
+
+      if (role !== 'admin' && targetEquipeId) {
+        eventQuery = eventQuery.eq('equipe_id', targetEquipeId)
+      } else if (role === 'parent' && !targetEquipeId) {
+        eventQuery = eventQuery.eq('id', '00000000-0000-0000-0000-000000000000') // query that returns empty
+      }
+      
       const { data: ev } = await eventQuery.maybeSingle()
       if (!ignore) setNextEvent(ev as any)
 
@@ -891,9 +911,6 @@ function DashboardPage({
         
         const { data: teams } = await supabase.from('equipes').select('*').eq('club_id', club.id).order('categorie')
         if (!ignore) setAdminTeams(teams || [])
-      } else if (role === 'parent' && userId) {
-        const { data: links } = await supabase.from('parent_children').select('*, profiles!child_id(*, equipes(categorie))').eq('parent_id', userId)
-        if (!ignore) setMyChildren(links?.map(l => l.profiles).filter(Boolean) || [])
       } else if (role === 'coach' && equipe?.id) {
         const { count: pCount } = await supabase.from('profiles').select('*', { count: 'exact', head: true }).eq('equipe_id', equipe.id).eq('role', 'joueur')
         const { count: eCount } = await supabase.from('evenements').select('*', { count: 'exact', head: true }).eq('equipe_id', equipe.id).gte('date', now)
@@ -906,17 +923,86 @@ function DashboardPage({
 
     loadDashboard()
     return () => { ignore = true }
-  }, [club?.id, role, equipe?.id, userId])
+  }, [club?.id, role, equipe?.id, userId, activeChildId, parentChildren])
 
   return (
     <section className="page dashboard-page">
       <header className="dashboard-header">
         <div className="welcome-text">
-          <h1>Bonjour, {role === 'admin' ? 'Président' : role === 'coach' ? 'Coach' : 'Champion'}</h1>
-          <p className="muted">{club?.nom} • {role === 'admin' ? 'Gestion Club' : equipe?.categorie || 'Football'}</p>
+          <h1>Bonjour, {role === 'admin' ? 'Président' : role === 'coach' ? 'Coach' : role === 'parent' ? 'Parent' : 'Champion'}</h1>
+          <p className="muted">{club?.nom} • {role === 'admin' ? 'Gestion Club' : role === 'parent' ? 'Espace Famille' : equipe?.categorie || 'Football'}</p>
         </div>
         {clubLogoUrl && <img src={clubLogoUrl} className="dash-club-logo" alt="Logo" />}
       </header>
+
+      {role === 'parent' && parentChildren.length > 0 && (
+        <div className="child-selector-container panel" style={{ padding: '1.25rem', marginBottom: '1.5rem', background: 'linear-gradient(135deg, rgba(26,29,54,0.6) 0%, rgba(13,15,30,0.8) 100%)', border: '1px solid rgba(57, 232, 255, 0.15)', borderRadius: '16px' }}>
+          <h3 style={{ margin: '0 0 1rem 0', fontSize: '1.1rem', color: 'var(--text-color)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <span style={{ color: 'var(--primary-color)' }}>⚽</span> Sélectionner l'enfant actif :
+          </h3>
+          <div className="child-scroll-grid" style={{ display: 'flex', gap: '1rem', overflowX: 'auto', paddingBottom: '0.5rem', scrollbarWidth: 'thin' }}>
+            {parentChildren.map((child) => {
+              const isActive = child.id === activeChildId
+              return (
+                <button
+                  key={child.id}
+                  onClick={() => setActiveChildId(child.id)}
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    minWidth: '150px',
+                    padding: '1rem',
+                    background: isActive ? 'linear-gradient(180deg, rgba(57, 232, 255, 0.15) 0%, rgba(112, 255, 151, 0.05) 100%)' : 'rgba(255, 255, 255, 0.03)',
+                    border: isActive ? '2px solid #39e8ff' : '2px solid rgba(255, 255, 255, 0.05)',
+                    boxShadow: isActive ? '0 0 15px rgba(57, 232, 255, 0.35)' : 'none',
+                    borderRadius: '12px',
+                    cursor: 'pointer',
+                    transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+                    color: 'inherit',
+                    textAlign: 'center',
+                  }}
+                  className={`child-card-btn ${isActive ? 'active' : ''}`}
+                >
+                  <div style={{
+                    width: '48px',
+                    height: '48px',
+                    borderRadius: '50%',
+                    background: isActive ? 'linear-gradient(135deg, #39e8ff 0%, #70ff97 100%)' : 'rgba(255, 255, 255, 0.1)',
+                    color: isActive ? '#001024' : 'inherit',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    fontWeight: 800,
+                    fontSize: '1.2rem',
+                    marginBottom: '0.75rem',
+                    boxShadow: isActive ? '0 0 10px rgba(57, 232, 255, 0.5)' : 'none',
+                  }}>
+                    {child.nom ? child.nom.slice(0, 2).toUpperCase() : '??'}
+                  </div>
+                  <strong style={{ display: 'block', fontSize: '0.95rem', fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', width: '100%' }}>
+                    {child.nom ? child.nom.split(' (')[0] : 'Enfant'}
+                  </strong>
+                  <span style={{ fontSize: '0.8rem', color: 'var(--primary-color)', fontWeight: 500, marginTop: '0.25rem', display: 'block' }}>
+                    {child.team_name}
+                  </span>
+                  <div style={{
+                    fontSize: '0.75rem',
+                    marginTop: '0.5rem',
+                    padding: '0.2rem 0.5rem',
+                    borderRadius: '12px',
+                    background: child.is_approved ? 'rgba(112, 255, 151, 0.15)' : 'rgba(255, 193, 7, 0.15)',
+                    color: child.is_approved ? '#70ff97' : '#ffc107',
+                    fontWeight: 500,
+                  }}>
+                    {child.is_approved ? '✅ Validé' : '⏳ En attente'}
+                  </div>
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      )}
 
       <div className="dash-grid">
         {/* Vue ADMIN : Chiffres clés du club */}
@@ -962,44 +1048,47 @@ function DashboardPage({
         {role === 'parent' && (
           <div className="dash-card">
             <h3>Mes enfants</h3>
-            {myChildren.length > 0 ? (
+            {parentChildren.length > 0 ? (
               <ul className="presence-list" style={{ marginTop: '1rem', marginBottom: '1rem' }}>
-                {myChildren.map(child => (
-                  <li key={child.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.5rem', background: 'var(--surface-color)', borderRadius: '6px', marginBottom: '0.5rem' }}>
+                {parentChildren.map(child => (
+                  <li key={child.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.5rem', background: 'var(--surface-color)', borderRadius: '6px', marginBottom: '0.5rem', border: child.id === activeChildId ? '1px solid #39e8ff' : 'none' }}>
                     <div>
-                      <strong>{child.nom}</strong>
+                      <strong>{child.nom || 'Enfant sans nom'}</strong>
                       <p className="muted" style={{ margin: 0 }}>
                         {child.is_approved ? '✅ Validé (Joueur)' : '⏳ En attente de validation'}
                       </p>
                     </div>
-                    {['U15', 'U18', 'U21', 'Seniors'].includes(child.equipes?.categorie) && (
-                      <button 
-                        className="link-button" 
-                        onClick={async () => {
-                          if (!supabase || !club || !userId) return
-                          const stamp = new Date().toISOString().slice(0, 10).replaceAll('-', '')
-                          const suffix = Math.random().toString(36).slice(2, 7).toUpperCase()
-                          const code = `${club.slug.toUpperCase()}-JOUEUR-${stamp}-${suffix}`
-                          
-                          const { error } = await supabase.from('invitation_codes').insert({
-                            code,
-                            kind: 'club_member',
-                            role: 'joueur',
-                            club_id: club.id,
-                            equipe_id: child.equipe_id,
-                            active: true,
-                            max_uses: 1,
-                            used_count: 0,
-                            created_by: userId,
-                            target_profile_id: child.id
-                          })
-                          if (error) alert('Erreur: ' + error.message)
-                          else alert(`Code généré: ${code}\nDonnez ce code au joueur pour qu'il s'approprie le compte.`)
-                        }}
-                      >
-                        Générer Code
-                      </button>
-                    )}
+                    <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                      {child.id === activeChildId && <span style={{ fontSize: '0.8rem', color: '#39e8ff', fontWeight: 600 }}>Actif</span>}
+                      {['U15', 'U18', 'U21', 'Seniors'].includes(child.team_category) && (
+                        <button 
+                          className="link-button" 
+                          onClick={async () => {
+                            if (!supabase || !club || !userId) return
+                            const stamp = new Date().toISOString().slice(0, 10).replaceAll('-', '')
+                            const suffix = Math.random().toString(36).slice(2, 7).toUpperCase()
+                            const code = `${club.slug.toUpperCase()}-JOUEUR-${stamp}-${suffix}`
+                            
+                            const { error } = await supabase.from('invitation_codes').insert({
+                              code,
+                              kind: 'club_member',
+                              role: 'joueur',
+                              club_id: club.id,
+                              equipe_id: child.equipe_id,
+                              active: true,
+                              max_uses: 1,
+                              used_count: 0,
+                              created_by: userId,
+                              target_profile_id: child.id
+                            })
+                            if (error) alert('Erreur: ' + error.message)
+                            else alert(`Code généré: ${code}\nDonnez ce code au joueur pour qu'il s'approprie le compte.`)
+                          }}
+                        >
+                          Générer Code
+                        </button>
+                      )}
+                    </div>
                   </li>
                 ))}
               </ul>
@@ -1034,8 +1123,7 @@ function DashboardPage({
                       if (pErr) throw pErr
                       
                       setChildNom('')
-                      const { data: links } = await supabase.from('parent_children').select('*, profiles!child_id(*)').eq('parent_id', userId)
-                      setMyChildren(links?.map(l => l.profiles).filter(Boolean) || [])
+                      await refreshParentChildren(userId, role)
                     } catch(e) {
                       alert('Erreur: ' + (e as Error).message)
                     } finally {
@@ -1189,35 +1277,7 @@ function TeamPage({
   const [playersError, setPlayersError] = useState<string | null>(null)
   const [playersBusy, setPlayersBusy] = useState(false)
 
-  const [slots, setSlots] = useState<TacticalSlotRow[]>([])
-  const [slotsError, setSlotsError] = useState<string | null>(null)
-  const [slotsBusy, setSlotsBusy] = useState(false)
-  const [selectedSlot, setSelectedSlot] = useState<number | null>(null)
-
-  const pitchRef = useRef<HTMLDivElement | null>(null)
-  const draggingRef = useRef<{ slotIndex: number; pointerId: number } | null>(null)
-  const channelRef = useRef<RealtimeChannel | null>(null)
-
-  const canEdit = role === 'coach' || role === 'admin' || role === 'super_admin'
   const equipeId = equipe?.id ?? null
-
-  const defaultSlots = useMemo(() => {
-    if (!equipeId) return []
-    const defs: Array<Omit<TacticalSlotRow, 'id' | 'profiles'>> = [
-      { equipe_id: equipeId, slot_index: 1, x: 50, y: 90, profile_id: null },
-      { equipe_id: equipeId, slot_index: 2, x: 20, y: 75, profile_id: null },
-      { equipe_id: equipeId, slot_index: 3, x: 40, y: 75, profile_id: null },
-      { equipe_id: equipeId, slot_index: 4, x: 60, y: 75, profile_id: null },
-      { equipe_id: equipeId, slot_index: 5, x: 80, y: 75, profile_id: null },
-      { equipe_id: equipeId, slot_index: 6, x: 20, y: 55, profile_id: null },
-      { equipe_id: equipeId, slot_index: 7, x: 40, y: 55, profile_id: null },
-      { equipe_id: equipeId, slot_index: 8, x: 60, y: 55, profile_id: null },
-      { equipe_id: equipeId, slot_index: 9, x: 80, y: 55, profile_id: null },
-      { equipe_id: equipeId, slot_index: 10, x: 40, y: 30, profile_id: null },
-      { equipe_id: equipeId, slot_index: 11, x: 60, y: 30, profile_id: null },
-    ]
-    return defs
-  }, [equipeId])
 
   const refreshPlayers = async () => {
     setPlayersError(null)
@@ -1250,17 +1310,185 @@ function TeamPage({
     }
   }
 
-  const ensureSlotsInitialized = async (existing: TacticalSlotRow[]) => {
+  useEffect(() => {
+    void refreshPlayers()
+  }, [equipeId])
+
+  useEffect(() => {
     if (!supabase) return
-    if (!canEdit) return
     if (!equipeId) return
-    if (existing.length > 0) return
+
+    const channel = supabase
+      .channel(`team-roster:${equipeId}`)
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'profiles', filter: `equipe_id=eq.${equipeId}` },
+        () => void refreshPlayers(),
+      )
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'profiles', filter: `equipe_id=eq.${equipeId}` },
+        () => void refreshPlayers(),
+      )
+      .subscribe()
+
+    return () => {
+      if (supabase) void supabase.removeChannel(channel)
+    }
+  }, [equipeId])
+
+  return (
+    <section className="page team-page">
+      <header className="page-title">
+        <h2>Effectif de l'Équipe</h2>
+        <p>{equipe ? `${equipe.categorie} - ${equipe.nom}` : club ? club.nom : 'Mon Équipe'}</p>
+      </header>
+
+      <div style={{ maxWidth: '600px', margin: '0 auto', width: '100%' }}>
+        <article className="panel roster-list">
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem' }}>
+            <h3 style={{ margin: 0 }}>Membres actifs</h3>
+            <button
+              type="button"
+              className="link-button"
+              onClick={() => void refreshPlayers()}
+              disabled={playersBusy}
+            >
+              Recharger
+            </button>
+          </div>
+          
+          {playersError && <p className="form-feedback error">{playersError}</p>}
+          {!equipeId && <p className="muted">Aucune équipe active sélectionnée.</p>}
+          {equipeId && players.length === 0 && <p className="muted">Aucun joueur dans cette équipe pour le moment.</p>}
+          
+          {players.length > 0 && (
+            <div style={{ display: 'grid', gap: '0.6rem' }}>
+              {players.map((p) => (
+                <div
+                  key={p.id}
+                  style={{
+                    padding: '0.8rem 1rem',
+                    borderRadius: '0.9rem',
+                    border: '1px solid rgba(0, 243, 255, 0.18)',
+                    background: 'rgba(0, 16, 36, 0.35)',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    gap: '0.75rem',
+                    alignItems: 'center',
+                  }}
+                >
+                  <strong>{p.nom}</strong>
+                  <span className="chip" style={{ fontSize: '0.75rem', background: 'rgba(0, 243, 255, 0.1)' }}>
+                    Joueur
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </article>
+      </div>
+    </section>
+  )
+}
+
+function StrategyPage({
+  club,
+  equipe,
+  role,
+  parentChildren,
+  activeChildId,
+}: {
+  club: ClubRow | null
+  equipe: EquipeRow | null
+  role: Role | null
+  parentChildren: Array<{ id: string; nom: string; equipe_id: string | null; team_name: string; team_category: string; is_approved: boolean }>
+  activeChildId: string
+}) {
+  const [players, setPlayers] = useState<Array<{ id: string; nom: string }>>([])
+  const [playersError, setPlayersError] = useState<string | null>(null)
+  const [playersBusy, setPlayersBusy] = useState(false)
+
+  const [slots, setSlots] = useState<TacticalSlotRow[]>([])
+  const [slotsError, setSlotsError] = useState<string | null>(null)
+  const [slotsBusy, setSlotsBusy] = useState(false)
+  const [selectedSlotIndex, setSelectedSlotIndex] = useState<number | null>(null)
+
+  const [localShared, setLocalShared] = useState(false)
+  const [localZoom, setLocalZoom] = useState<'full' | 'half' | 'quarter-top' | 'quarter-bottom'>('full')
+  const [isFullscreen, setIsFullscreen] = useState(false)
+  const [activeColor, setActiveColor] = useState('#00f3ff') // cyan default
+
+  const pitchRef = useRef<HTMLDivElement | null>(null)
+  const draggingRef = useRef<{ slotIndex: number; pointerId: number } | null>(null)
+  const channelRef = useRef<RealtimeChannel | null>(null)
+
+  const canEdit = role === 'coach' || role === 'admin' || role === 'super_admin'
+
+  // Determine active team
+  let equipeId = equipe?.id ?? null
+  if (role === 'parent') {
+    const activeChild = parentChildren.find((c) => c.id === activeChildId)
+    equipeId = activeChild?.equipe_id || null
+  }
+
+  // Preset neon colors for quick selection
+  const colorPresets = ['#00f3ff', '#ff0055', '#ffe087', '#6effac', '#ffaa00', '#ffffff']
+
+  const defaultSlots = useMemo(() => {
+    if (!equipeId) return []
+    const defs: Array<Omit<TacticalSlotRow, 'id' | 'profiles'>> = [
+      { equipe_id: equipeId, slot_index: 1, x: 10, y: 50, color: '#00f3ff', profile_id: null },
+      { equipe_id: equipeId, slot_index: 2, x: 25, y: 18, color: '#00f3ff', profile_id: null },
+      { equipe_id: equipeId, slot_index: 3, x: 25, y: 38, color: '#00f3ff', profile_id: null },
+      { equipe_id: equipeId, slot_index: 4, x: 25, y: 62, color: '#00f3ff', profile_id: null },
+      { equipe_id: equipeId, slot_index: 5, x: 25, y: 82, color: '#00f3ff', profile_id: null },
+      { equipe_id: equipeId, slot_index: 6, x: 48, y: 25, color: '#00f3ff', profile_id: null },
+      { equipe_id: equipeId, slot_index: 7, x: 45, y: 50, color: '#00f3ff', profile_id: null },
+      { equipe_id: equipeId, slot_index: 8, x: 48, y: 75, color: '#00f3ff', profile_id: null },
+      { equipe_id: equipeId, slot_index: 9, x: 75, y: 20, color: '#ff0055', profile_id: null },
+      { equipe_id: equipeId, slot_index: 10, x: 78, y: 50, color: '#ff0055', profile_id: null },
+      { equipe_id: equipeId, slot_index: 11, x: 75, y: 80, color: '#ff0055', profile_id: null },
+    ]
+    return defs
+  }, [equipeId])
+
+  const refreshPlayers = async () => {
+    setPlayersError(null)
+    if (!supabase || !equipeId) {
+      setPlayers([])
+      return
+    }
+
+    setPlayersBusy(true)
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('id, nom, role, equipe_id')
+        .eq('equipe_id', equipeId)
+        .eq('role', 'joueur')
+        .order('nom', { ascending: true })
+        .limit(200)
+
+      if (error) throw error
+      setPlayers(((data as Array<{ id: string; nom: string }>) ?? []).map((row) => ({ id: row.id, nom: row.nom })))
+    } catch (caught) {
+      setPlayers([])
+      setPlayersError(formatSupabaseError(caught))
+    } finally {
+      setPlayersBusy(false)
+    }
+  }
+
+  const ensureSlotsInitialized = async (existing: TacticalSlotRow[]) => {
+    if (!supabase || !canEdit || !equipeId || existing.length > 0) return
 
     const payload = defaultSlots.map((row) => ({
       equipe_id: row.equipe_id,
       slot_index: row.slot_index,
       x: row.x,
       y: row.y,
+      color: row.color,
       profile_id: null,
     }))
 
@@ -1274,11 +1502,7 @@ function TeamPage({
 
   const refreshSlots = async () => {
     setSlotsError(null)
-    if (!supabase) {
-      setSlots([])
-      return
-    }
-    if (!equipeId) {
+    if (!supabase || !equipeId) {
       setSlots([])
       return
     }
@@ -1287,28 +1511,32 @@ function TeamPage({
     try {
       const { data, error } = await supabase
         .from('tactical_slots')
-        .select('id, equipe_id, slot_index, x, y, profile_id, profiles ( nom )')
+        .select('id, equipe_id, slot_index, x, y, color, profile_id, profiles ( nom )')
         .eq('equipe_id', equipeId)
         .order('slot_index', { ascending: true })
-        .limit(20)
+        .limit(40)
 
       if (error) throw error
       const rows = (data as TacticalSlotRow[]) ?? []
-      await ensureSlotsInitialized(rows)
-
-      const { data: data2, error: error2 } = await supabase
-        .from('tactical_slots')
-        .select('id, equipe_id, slot_index, x, y, profile_id, profiles ( nom )')
-        .eq('equipe_id', equipeId)
-        .order('slot_index', { ascending: true })
-        .limit(20)
-
-      if (error2) throw error2
-      setSlots(((data2 as TacticalSlotRow[]) ?? []).map((row) => ({
-        ...row,
-        x: Number(row.x),
-        y: Number(row.y),
-      })))
+      
+      if (rows.length === 0 && canEdit) {
+        await ensureSlotsInitialized(rows)
+        // Refetch after initialization
+        const { data: refetched, error: error2 } = await supabase
+          .from('tactical_slots')
+          .select('id, equipe_id, slot_index, x, y, color, profile_id, profiles ( nom )')
+          .eq('equipe_id', equipeId)
+          .order('slot_index', { ascending: true })
+        if (error2) throw error2
+        setSlots((refetched as TacticalSlotRow[] ?? []).map(r => ({ ...r, x: Number(r.x), y: Number(r.y) })))
+      } else {
+        setSlots(rows.map((row) => ({
+          ...row,
+          x: Number(row.x),
+          y: Number(row.y),
+          color: row.color || '#00f3ff',
+        })))
+      }
     } catch (caught) {
       setSlots([])
       setSlotsError(formatSupabaseError(caught))
@@ -1317,9 +1545,22 @@ function TeamPage({
     }
   }
 
-  const persistSlot = async (slotIndex: number, patch: Partial<Pick<TacticalSlotRow, 'x' | 'y' | 'profile_id'>>) => {
-    if (!supabase) return
-    if (!canEdit) return
+  // Load team strategy fields
+  const refreshTeamStrategyState = async () => {
+    if (!supabase || !equipeId) return
+    const { data, error } = await supabase
+      .from('equipes')
+      .select('strategy_shared, strategy_zoom')
+      .eq('id', equipeId)
+      .maybeSingle()
+    if (!error && data) {
+      setLocalShared(data.strategy_shared ?? false)
+      setLocalZoom((data.strategy_zoom as 'full' | 'half' | 'quarter-top' | 'quarter-bottom') ?? 'full')
+    }
+  }
+
+  const persistSlot = async (slotIndex: number, patch: Partial<Pick<TacticalSlotRow, 'x' | 'y' | 'profile_id' | 'color'>>) => {
+    if (!supabase || !canEdit) return
     const row = slots.find((s) => s.slot_index === slotIndex)
     if (!row) return
 
@@ -1329,6 +1570,7 @@ function TeamPage({
         ...('x' in patch ? { x: patch.x } : {}),
         ...('y' in patch ? { y: patch.y } : {}),
         ...('profile_id' in patch ? { profile_id: patch.profile_id } : {}),
+        ...('color' in patch ? { color: patch.color } : {}),
         updated_at: new Date().toISOString(),
       })
       .eq('id', row.id)
@@ -1338,31 +1580,134 @@ function TeamPage({
     }
   }
 
+  const handleAddPoint = async (color: string) => {
+    if (!supabase || !canEdit || !equipeId) return
+    
+    // Find next available slot_index
+    const nextIndex = slots.length > 0 ? Math.max(...slots.map(s => s.slot_index)) + 1 : 1
+
+    try {
+      const { data, error } = await supabase
+        .from('tactical_slots')
+        .insert({
+          equipe_id: equipeId,
+          slot_index: nextIndex,
+          x: 50,
+          y: 50,
+          color: color,
+          profile_id: null
+        })
+        .select('id, equipe_id, slot_index, x, y, color, profile_id, profiles ( nom )')
+        .single()
+
+      if (error) throw error
+      if (data) {
+        setSlots(prev => [...prev, { ...data, x: Number(data.x), y: Number(data.y) }].sort((a,b) => a.slot_index - b.slot_index))
+        setSelectedSlotIndex(data.slot_index)
+      }
+    } catch (caught) {
+      setSlotsError(formatSupabaseError(caught))
+    }
+  }
+
+  const handleRemovePoint = async (slotIndex: number) => {
+    if (!supabase || !canEdit || !equipeId) return
+    const row = slots.find(s => s.slot_index === slotIndex)
+    if (!row) return
+
+    try {
+      const { error } = await supabase
+        .from('tactical_slots')
+        .delete()
+        .eq('id', row.id)
+
+      if (error) throw error
+      setSlots(prev => prev.filter(s => s.slot_index !== slotIndex))
+      if (selectedSlotIndex === slotIndex) setSelectedSlotIndex(null)
+    } catch (caught) {
+      setSlotsError(formatSupabaseError(caught))
+    }
+  }
+
+  const handleResetBoard = async () => {
+    if (!supabase || !canEdit || !equipeId) return
+    if (!window.confirm("Réinitialiser le tableau tactique ? Tous les points actuels seront supprimés.")) return
+
+    try {
+      setSlotsBusy(true)
+      // Delete all current slots
+      const { error: deleteError } = await supabase
+        .from('tactical_slots')
+        .delete()
+        .eq('equipe_id', equipeId)
+
+      if (deleteError) throw deleteError
+
+      // Initialize default
+      await ensureSlotsInitialized([])
+      setSelectedSlotIndex(null)
+      await refreshSlots()
+    } catch (caught) {
+      setSlotsError(formatSupabaseError(caught))
+    } finally {
+      setSlotsBusy(false)
+    }
+  }
+
+  const handleToggleShare = async (sharedVal: boolean) => {
+    if (!supabase || !canEdit || !equipeId) return
+    setLocalShared(sharedVal)
+    try {
+      const { error } = await supabase
+        .from('equipes')
+        .update({ strategy_shared: sharedVal })
+        .eq('id', equipeId)
+      if (error) throw error
+    } catch (caught) {
+      console.error(caught)
+    }
+  }
+
+  const handleZoomChange = async (zoomVal: 'full' | 'half' | 'quarter-top' | 'quarter-bottom') => {
+    setLocalZoom(zoomVal)
+    if (!supabase || !canEdit || !equipeId) return
+    try {
+      const { error } = await supabase
+        .from('equipes')
+        .update({ strategy_zoom: zoomVal })
+        .eq('id', equipeId)
+      if (error) throw error
+    } catch (caught) {
+      console.error(caught)
+    }
+  }
+
   useEffect(() => {
     void refreshPlayers()
     void refreshSlots()
+    void refreshTeamStrategyState()
   }, [equipeId])
 
   useEffect(() => {
-    if (!supabase) return
-    if (!equipeId) return
+    if (!supabase || !equipeId) return
 
     const channel = supabase
-      .channel(`team:${equipeId}`)
-      .on(
-        'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'profiles', filter: `equipe_id=eq.${equipeId}` },
-        () => void refreshPlayers(),
-      )
-      .on(
-        'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'profiles', filter: `equipe_id=eq.${equipeId}` },
-        () => void refreshPlayers(),
-      )
+      .channel(`team-strategy:${equipeId}`)
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'tactical_slots', filter: `equipe_id=eq.${equipeId}` },
         () => void refreshSlots(),
+      )
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'equipes', filter: `id=eq.${equipeId}` },
+        (payload) => {
+          const updated = payload.new as EquipeRow
+          if (updated) {
+            setLocalShared(updated.strategy_shared ?? false)
+            setLocalZoom((updated.strategy_zoom as 'full' | 'half' | 'quarter-top' | 'quarter-bottom') ?? 'full')
+          }
+        }
       )
       .subscribe()
 
@@ -1376,7 +1721,7 @@ function TeamPage({
   const onPointerDownSlot = (event: PointerEvent<HTMLButtonElement>, slotIndex: number) => {
     if (!canEdit) return
     draggingRef.current = { slotIndex, pointerId: event.pointerId }
-    setSelectedSlot(slotIndex)
+    setSelectedSlotIndex(slotIndex)
     event.currentTarget.setPointerCapture(event.pointerId)
   }
 
@@ -1388,8 +1733,10 @@ function TeamPage({
     const rect = pitchRef.current.getBoundingClientRect()
     const rawX = ((event.clientX - rect.left) / rect.width) * 100
     const rawY = ((event.clientY - rect.top) / rect.height) * 100
-    const x = Math.max(4, Math.min(96, rawX))
-    const y = Math.max(4, Math.min(96, rawY))
+    
+    // Clamp inside pitch safely
+    const x = Math.max(3, Math.min(97, rawX))
+    const y = Math.max(3, Math.min(97, rawY))
 
     setSlots((current) =>
       current.map((s) => (s.slot_index === dragging.slotIndex ? { ...s, x, y } : s)),
@@ -1405,161 +1752,440 @@ function TeamPage({
     await persistSlot(dragging.slotIndex, { x: row.x, y: row.y })
   }
 
-  const selected = selectedSlot ? slots.find((s) => s.slot_index === selectedSlot) ?? null : null
+  const selected = selectedSlotIndex ? slots.find((s) => s.slot_index === selectedSlotIndex) ?? null : null
 
   return (
-    <section className="page team-page">
-      <header className="page-title">
-        <h2>Selection Equipe</h2>
-        <p>{equipe ? `${equipe.categorie} - ${equipe.nom}` : club ? club.nom : 'Equipe'}</p>
-      </header>
+    <section className={`page strategy-page ${isFullscreen ? 'in-fullscreen' : ''}`}>
+      {!isFullscreen && (
+        <header className="page-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem' }}>
+          <div>
+            <h2>Stratégie Tactique</h2>
+            <p>{equipe ? `${equipe.categorie} - ${equipe.nom}` : club ? club.nom : 'Tableau Tactique'}</p>
+          </div>
+          {canEdit && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.8rem', background: 'rgba(0,16,36,0.45)', padding: '0.5rem 1rem', borderRadius: '1rem', border: '1px solid rgba(0, 243, 255, 0.15)' }}>
+              <span className="muted" style={{ fontSize: '0.85rem', fontWeight: 700 }}>Partager la tactique :</span>
+              <label className="premium-switch">
+                <input
+                  type="checkbox"
+                  checked={localShared}
+                  onChange={(e) => void handleToggleShare(e.target.checked)}
+                />
+                <span className="premium-slider" />
+              </label>
+            </div>
+          )}
+        </header>
+      )}
 
-      <div className="team-layout">
-        <article className="panel tactical-board">
-          <div
-            ref={pitchRef}
-            className="pitch-area"
-            onPointerMove={onPointerMovePitch}
-            onPointerUp={() => void onPointerUpPitch()}
-          >
-            <div className="pitch-lines" />
+      {/* Top bar visible ONLY in fullscreen mode */}
+      {isFullscreen && (
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.75rem 1rem', background: 'rgba(0,16,36,0.85)', border: '1px solid rgba(0, 243, 255, 0.25)', borderRadius: '12px', marginBottom: '1rem', width: '100%' }}>
+          <div>
+            <h2 style={{ fontSize: '1.25rem', margin: 0, color: 'var(--neon-cyan)' }}>Stratégie Tactique (Plein Écran)</h2>
+            <p className="muted" style={{ margin: 0, fontSize: '0.8rem' }}>{equipe ? `${equipe.categorie} - ${equipe.nom}` : club ? club.nom : 'Tableau Tactique'}</p>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '1.5rem' }}>
+            {canEdit && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
+                <span className="muted" style={{ fontSize: '0.8rem', fontWeight: 700 }}>Partager :</span>
+                <label className="premium-switch">
+                  <input
+                    type="checkbox"
+                    checked={localShared}
+                    onChange={(e) => void handleToggleShare(e.target.checked)}
+                  />
+                  <span className="premium-slider" />
+                </label>
+              </div>
+            )}
+            <button
+              type="button"
+              className="primary-button"
+              onClick={() => setIsFullscreen(false)}
+              style={{
+                fontSize: '0.75rem',
+                padding: '0.5rem 1rem',
+                margin: 0,
+                background: 'linear-gradient(110deg, #ff0055, #990022)',
+                border: '1px solid rgba(255, 0, 85, 0.4)',
+                boxShadow: '0 0 10px rgba(255, 0, 85, 0.2)',
+                color: '#fff',
+                borderRadius: '8px',
+              }}
+            >
+              Quitter Plein Écran
+            </button>
+          </div>
+        </div>
+      )}
 
-            {slots.map((slot) => {
-              const isSelected = selectedSlot === slot.slot_index
-              const label = slot.profiles?.nom ?? ''
-              return (
-                <button
-                  key={slot.id}
-                  type="button"
-                  onPointerDown={(event) => onPointerDownSlot(event, slot.slot_index)}
-                  onClick={() => setSelectedSlot(slot.slot_index)}
-                  aria-label={`Point ${slot.slot_index}`}
-                  disabled={!canEdit && !label}
-                  style={{
-                    position: 'absolute',
-                    left: `calc(${slot.x}% - 14px)`,
-                    top: `calc(${slot.y}% - 14px)`,
-                    width: '28px',
-                    height: '28px',
-                    borderRadius: '999px',
-                    border: '1px solid rgba(0, 243, 255, 0.35)',
-                    background: isSelected ? 'rgba(0, 243, 255, 0.18)' : 'rgba(0, 16, 36, 0.75)',
-                    color: 'inherit',
-                    cursor: canEdit ? 'grab' : 'default',
-                    touchAction: 'none',
-                    display: 'grid',
-                    placeItems: 'center',
-                  }}
-                >
-                  <strong style={{ fontSize: '0.85rem' }}>{slot.slot_index}</strong>
-                  {label && (
-                    <span
-                      className="chip"
-                      style={{
-                        position: 'absolute',
-                        top: '30px',
-                        left: '50%',
-                        transform: 'translateX(-50%)',
-                        maxWidth: '9rem',
-                        whiteSpace: 'nowrap',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                      }}
-                    >
-                      {label}
-                    </span>
-                  )}
-                </button>
-              )
-            })}
+      <div className={`tests-chat-grid strategy-layout-wrapper ${isFullscreen ? 'is-fullscreen' : ''}`} style={{ gridTemplateColumns: isFullscreen ? (canEdit ? '1.8fr 0.8fr' : '1fr') : (canEdit ? '1.55fr 1fr' : '1fr') }}>
+        
+        {/* Left Side: Pitch Viewport */}
+        <article className="panel tactical-board" style={{ padding: 0, display: 'flex', flexDirection: 'column' }}>
+          
+          {/* Header of tactical board with fullscreen button */}
+          {/* Header of tactical board with fullscreen toggle button */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.65rem 1rem', borderBottom: '1px solid rgba(0, 243, 255, 0.1)', background: 'rgba(0, 16, 36, 0.25)' }}>
+            <span className="muted" style={{ fontWeight: 700, fontSize: '0.8rem' }}>
+              {isFullscreen ? "Tableau de stratégie (Plein Écran)" : "Tableau de stratégie"}
+            </span>
+            <button
+              type="button"
+              className="skill-tab"
+              onClick={() => setIsFullscreen(!isFullscreen)}
+              style={{
+                padding: '0.35rem 0.85rem',
+                fontSize: '0.78rem',
+                margin: 0,
+                background: isFullscreen ? 'rgba(255, 0, 85, 0.12)' : '',
+                borderColor: isFullscreen ? '#ff0055' : '',
+                color: isFullscreen ? '#ff3366' : ''
+              }}
+            >
+              {isFullscreen ? "Quitter Plein Écran" : "Plein Écran"}
+            </button>
+          </div>
+
+          <div className="pitch-viewport" style={{ flex: 1 }}>
+            
+            {/* If strategy is locked for normal player/parent */}
+            {!canEdit && !localShared && (
+              <div className="strategy-locked">
+                <div className="strategy-locked-icon">
+                  <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                    <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                  </svg>
+                </div>
+                <h3>Plan de jeu verrouillé</h3>
+                <p>Le coach n'a pas encore partagé son plan tactique. Revenez plus tard ou attendez le signal !</p>
+              </div>
+            )}
+
+            <div
+              ref={pitchRef}
+              className={`pitch-area zoom-${localZoom}`}
+              onPointerMove={onPointerMovePitch}
+              onPointerUp={() => void onPointerUpPitch()}
+            >
+              {/* Detailed high-fidelity pitch markings */}
+              <div className="pitch-lines">
+                <div className="line-center" />
+                <div className="circle-center" />
+                <div className="spot-center" />
+                
+                {/* Left side markings */}
+                <div className="penalty-box left" />
+                <div className="goal-box left" />
+                <div className="penalty-spot left" />
+                <div className="penalty-arc left" />
+                
+                {/* Right side markings */}
+                <div className="penalty-box right" />
+                <div className="goal-box right" />
+                <div className="penalty-spot right" />
+                <div className="penalty-arc right" />
+                
+                {/* Corner arcs */}
+                <div className="corner-arc top-left" />
+                <div className="corner-arc bottom-left" />
+                <div className="corner-arc top-right" />
+                <div className="corner-arc bottom-right" />
+                
+                {/* Goals */}
+                <div className="goal-post left" />
+                <div className="goal-post right" />
+              </div>
+
+              {slots.map((slot) => {
+                const isSelected = selectedSlotIndex === slot.slot_index
+                const label = slot.profiles?.nom ?? ''
+                const color = slot.color || '#00f3ff'
+                
+                return (
+                  <button
+                    key={slot.id}
+                    type="button"
+                    className="player-dot"
+                    onPointerDown={(event) => onPointerDownSlot(event, slot.slot_index)}
+                    onClick={() => setSelectedSlotIndex(slot.slot_index)}
+                    aria-label={`Slot ${slot.slot_index}`}
+                    disabled={!canEdit && !label}
+                    style={{
+                      position: 'absolute',
+                      left: `${slot.x}%`,
+                      top: `${slot.y}%`,
+                      transform: 'translate(-50%, -50%)',
+                      width: '28px',
+                      height: '28px',
+                      borderRadius: '50%',
+                      border: isSelected ? '2px solid #ffffff' : '1px solid rgba(255, 255, 255, 0.25)',
+                      background: color,
+                      boxShadow: `0 0 12px ${color}${isSelected ? ', 0 0 20px #ffffff' : ''}`,
+                      color: '#001024',
+                      cursor: canEdit ? 'grab' : 'default',
+                      touchAction: 'none',
+                      display: 'grid',
+                      placeItems: 'center',
+                      zIndex: isSelected ? 3 : 2,
+                      transition: 'border-color 0.15s, box-shadow 0.15s, background-color 0.15s',
+                    }}
+                  >
+                    <strong style={{ fontSize: '0.8rem', color: '#001024' }}>{slot.slot_index}</strong>
+                    {label && (
+                      <span
+                        className="chip"
+                        style={{
+                          position: 'absolute',
+                          top: '32px',
+                          left: '50%',
+                          transform: 'translateX(-50%)',
+                          maxWidth: '9rem',
+                          whiteSpace: 'nowrap',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          background: 'rgba(0,16,36,0.85)',
+                          border: `1px solid ${color}`,
+                          color: '#ffffff',
+                          fontSize: '0.72rem',
+                          padding: '0.1rem 0.45rem',
+                          boxShadow: `0 2px 6px rgba(0,0,0,0.5)`,
+                        }}
+                      >
+                        {label}
+                      </span>
+                    )}
+                  </button>
+                )
+              })}
+            </div>
           </div>
 
           {slotsError && <p className="form-feedback error" style={{ margin: '0.75rem 1rem' }}>{slotsError}</p>}
 
-          <div style={{ padding: '1rem', display: 'grid', gap: '0.6rem' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.75rem' }}>
-              <div>
-                <h3 style={{ margin: 0 }}>Terrain (11 points)</h3>
-                <p className="muted" style={{ margin: 0 }}>
-                  {canEdit ? 'Glisse les points, puis assigne un joueur.' : 'Lecture seule.'}
-                </p>
-              </div>
+          {/* Quick info bar under the pitch */}
+          <div style={{ padding: '0.8rem 1rem', borderTop: '1px solid rgba(0,243,255,0.1)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'rgba(0,16,36,0.15)' }}>
+            <span className="muted" style={{ fontSize: '0.85rem' }}>
+              Nombre de joueurs placés : <strong>{slots.length}</strong>
+            </span>
+            <div style={{ display: 'flex', gap: '0.5rem' }}>
               <button
                 type="button"
-                className="link-button"
+                className="skill-tab"
+                style={{ padding: '0.35rem 0.75rem', fontSize: '0.75rem' }}
                 onClick={() => {
                   void refreshPlayers()
                   void refreshSlots()
+                  void refreshTeamStrategyState()
                 }}
                 disabled={playersBusy || slotsBusy}
               >
                 Recharger
               </button>
-            </div>
-
-            {canEdit && selected && (
-              <label>
-                Assigner au point {selected.slot_index}
-                <select
-                  value={selected.profile_id ?? ''}
-                  onChange={(event) => {
-                    const nextProfileId = event.target.value || null
-                    setSlots((current) =>
-                      current.map((s) =>
-                        s.slot_index === selected.slot_index
-                          ? {
-                            ...s,
-                            profile_id: nextProfileId,
-                            profiles:
-                              nextProfileId
-                                ? { nom: players.find((p) => p.id === nextProfileId)?.nom ?? 'Joueur' }
-                                : null,
-                          }
-                          : s,
-                      ),
-                    )
-                    void persistSlot(selected.slot_index, { profile_id: nextProfileId })
-                  }}
+              {canEdit && (
+                <button
+                  type="button"
+                  className="skill-tab"
+                  style={{ padding: '0.35rem 0.75rem', fontSize: '0.75rem', borderColor: 'rgba(255, 77, 126, 0.45)', color: '#ffd6e0' }}
+                  onClick={handleResetBoard}
+                  disabled={slotsBusy}
                 >
-                  <option value="">(Aucun)</option>
-                  {players.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.nom}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
+                  Réinitialiser
+                </button>
+              )}
+            </div>
           </div>
         </article>
 
-        <article className="panel roster-list">
-          <h3>Effectif</h3>
-          {playersError && <p className="form-feedback error">{playersError}</p>}
-          {!equipeId && <p className="muted">Equipe non definie.</p>}
-          {equipeId && players.length === 0 && <p className="muted">Aucun joueur pour le moment.</p>}
-          {players.length > 0 && (
-            <div style={{ display: 'grid', gap: '0.5rem', marginTop: '0.75rem' }}>
-              {players.map((p) => (
-                <div
-                  key={p.id}
+        {/* Right Side: Coach Controls */}
+        {canEdit && (
+          <div className="strategy-controls-panel">
+            
+            {/* Terrain Zoom Card */}
+            <article className="panel" style={{ padding: '1.25rem' }}>
+              <h3 style={{ margin: '0 0 0.85rem' }}>Zoom & Zone Tactique</h3>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.65rem' }}>
+                <button
+                  type="button"
+                  className={`skill-tab ${localZoom === 'full' ? 'active' : ''}`}
+                  onClick={() => void handleZoomChange('full')}
+                  style={{ fontSize: '0.78rem', padding: '0.65rem 0.4rem', textAlign: 'center' }}
+                >
+                  Terrain Entier
+                </button>
+                <button
+                  type="button"
+                  className={`skill-tab ${localZoom === 'half' ? 'active' : ''}`}
+                  onClick={() => void handleZoomChange('half')}
+                  style={{ fontSize: '0.78rem', padding: '0.65rem 0.4rem', textAlign: 'center' }}
+                >
+                  Demi-Terrain
+                </button>
+                <button
+                  type="button"
+                  className={`skill-tab ${localZoom === 'quarter-top' ? 'active' : ''}`}
+                  onClick={() => void handleZoomChange('quarter-top')}
+                  style={{ fontSize: '0.78rem', padding: '0.65rem 0.4rem', textAlign: 'center' }}
+                >
+                  Quart (Corner Haut & But)
+                </button>
+                <button
+                  type="button"
+                  className={`skill-tab ${localZoom === 'quarter-bottom' ? 'active' : ''}`}
+                  onClick={() => void handleZoomChange('quarter-bottom')}
+                  style={{ fontSize: '0.78rem', padding: '0.65rem 0.4rem', textAlign: 'center' }}
+                >
+                  Quart (Corner Bas & But)
+                </button>
+              </div>
+            </article>
+
+            {/* Quick Adding Card */}
+            <article className="panel" style={{ padding: '1.25rem' }}>
+              <h3 style={{ margin: '0 0 0.85rem' }}>Ajouter des points</h3>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.65rem' }}>
+                <button
+                  type="button"
+                  className="primary-button"
+                  onClick={() => void handleAddPoint('#00f3ff')}
                   style={{
-                    padding: '0.6rem 0.75rem',
-                    borderRadius: '0.9rem',
-                    border: '1px solid rgba(0, 243, 255, 0.18)',
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    gap: '0.75rem',
-                    alignItems: 'center',
+                    fontSize: '0.75rem',
+                    padding: '0.65rem 0.5rem',
+                    background: 'linear-gradient(110deg, #00f3ff, #0055ff)',
+                    boxShadow: '0 0 10px rgba(0, 243, 255, 0.25)',
+                    color: '#fff',
+                    border: '1px solid rgba(0,243,255,0.4)',
                   }}
                 >
-                  <strong>{p.nom}</strong>
-                  <span className="muted" style={{ fontSize: '0.85rem' }}>Joueur</span>
+                  + Joueur Bleu (A)
+                </button>
+                <button
+                  type="button"
+                  className="primary-button"
+                  onClick={() => void handleAddPoint('#ff0055')}
+                  style={{
+                    fontSize: '0.75rem',
+                    padding: '0.65rem 0.5rem',
+                    background: 'linear-gradient(110deg, #ff0055, #990022)',
+                    boxShadow: '0 0 10px rgba(255, 0, 85, 0.25)',
+                    color: '#fff',
+                    border: '1px solid rgba(255,0,85,0.4)',
+                  }}
+                >
+                  + Joueur Rose (B)
+                </button>
+              </div>
+            </article>
+
+            {/* Selected Dot Configuration Card */}
+            <article className="panel" style={{ padding: '1.25rem' }}>
+              <h3 style={{ margin: '0 0 0.85rem' }}>Édition du Point</h3>
+              {selected ? (
+                <div style={{ display: 'grid', gap: '1rem' }}>
+                  
+                  {/* Color chooser */}
+                  <div>
+                    <span className="muted" style={{ display: 'block', fontSize: '0.85rem', marginBottom: '0.5rem', fontWeight: 600 }}>
+                      Couleur du point {selected.slot_index} :
+                    </span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                      <div className="color-presets">
+                        {colorPresets.map((preset) => (
+                          <button
+                            key={preset}
+                            type="button"
+                            className={`color-preset-chip ${selected.color === preset ? 'active' : ''}`}
+                            style={{ backgroundColor: preset, color: preset }}
+                            onClick={() => {
+                              const updatedSlots = slots.map(s => s.slot_index === selected.slot_index ? { ...s, color: preset } : s)
+                              setSlots(updatedSlots)
+                              void persistSlot(selected.slot_index, { color: preset })
+                            }}
+                          />
+                        ))}
+                      </div>
+                      <input
+                        type="color"
+                        value={selected.color || '#00f3ff'}
+                        onChange={(e) => {
+                          const updatedSlots = slots.map(s => s.slot_index === selected.slot_index ? { ...s, color: e.target.value } : s)
+                          setSlots(updatedSlots)
+                          void persistSlot(selected.slot_index, { color: e.target.value })
+                        }}
+                        style={{
+                          width: '32px',
+                          height: '32px',
+                          padding: 0,
+                          border: '1px solid rgba(255,255,255,0.2)',
+                          borderRadius: '6px',
+                          background: 'none',
+                          cursor: 'pointer',
+                        }}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Player assignment */}
+                  <label style={{ fontSize: '0.85rem' }}>
+                    Assigner un Joueur :
+                    <select
+                      value={selected.profile_id ?? ''}
+                      onChange={(event) => {
+                        const nextProfileId = event.target.value || null
+                        setSlots((current) =>
+                          current.map((s) =>
+                            s.slot_index === selected.slot_index
+                              ? {
+                                  ...s,
+                                  profile_id: nextProfileId,
+                                  profiles: nextProfileId
+                                    ? { nom: players.find((p) => p.id === nextProfileId)?.nom ?? 'Joueur' }
+                                    : null,
+                                }
+                              : s,
+                          ),
+                        )
+                        void persistSlot(selected.slot_index, { profile_id: nextProfileId })
+                      }}
+                      style={{ marginTop: '0.35rem' }}
+                    >
+                      <option value="">(Aucun)</option>
+                      {players.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.nom}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  {/* Remove button */}
+                  <button
+                    type="button"
+                    className="skill-tab"
+                    style={{
+                      marginTop: '0.5rem',
+                      borderColor: 'rgba(255, 77, 126, 0.45)',
+                      color: '#ffd6e0',
+                      padding: '0.65rem',
+                      textAlign: 'center',
+                    }}
+                    onClick={() => void handleRemovePoint(selected.slot_index)}
+                  >
+                    Retirer ce point (- {selected.slot_index})
+                  </button>
+
                 </div>
-              ))}
-            </div>
-          )}
-        </article>
+              ) : (
+                <p className="muted" style={{ margin: 0, fontSize: '0.9rem' }}>
+                  Sélectionne un joueur ou un point sur le terrain pour modifier ses options (couleur, nom, suppression).
+                </p>
+              )}
+            </article>
+
+          </div>
+        )}
       </div>
     </section>
   )
@@ -1570,11 +2196,15 @@ function EventsPage({
   userId,
   club,
   role,
+  parentChildren,
+  activeChildId,
 }: {
   equipe: EquipeRow | null
   userId: string | null
   club: ClubRow | null
   role: Role | null
+  parentChildren: Array<{ id: string; nom: string; equipe_id: string | null; team_name: string; team_category: string; is_approved: boolean }>
+  activeChildId: string
 }) {
   const [events, setEvents] = useState<EvenementRow[] | null>(null)
 
@@ -1634,6 +2264,14 @@ function EventsPage({
 
       if ((role === 'coach' || role === 'joueur') && equipe?.id) {
         query = query.eq('equipe_id', equipe.id)
+      } else if (role === 'parent') {
+        const activeChild = parentChildren.find(c => c.id === activeChildId)
+        if (activeChild?.equipe_id) {
+          query = query.eq('equipe_id', activeChild.equipe_id)
+        } else {
+          setEvents([])
+          return
+        }
       }
 
       const { data, error } = await query
@@ -1650,7 +2288,7 @@ function EventsPage({
     return () => {
       ignore = true
     }
-  }, [club?.id, equipe?.id, role, userId])
+  }, [club?.id, equipe?.id, role, userId, activeChildId, parentChildren])
 
   const refreshPlayers = async () => {
     if (!supabase) {
@@ -1688,8 +2326,7 @@ function EventsPage({
 
     setPlayers(((data as Array<{ id: string; nom: string }>) ?? []).map((row) => ({ id: row.id, nom: row.nom })))
   }
-  
-  const [myChildren, setMyChildren] = useState<any[]>([])
+
 
   useEffect(() => {
     void refreshPlayers()
@@ -1789,13 +2426,9 @@ function EventsPage({
     if ((role === 'coach' || role === 'joueur') && equipe?.id) {
       query = query.eq('equipe_id', equipe.id)
     } else if (role === 'parent') {
-      const { data: links } = await supabase.from('parent_children').select('profiles!child_id(equipe_id, id, nom)').eq('parent_id', userId)
-      if (links) {
-        setMyChildren(links.map((l: any) => l.profiles).filter(Boolean))
-      }
-      const teamIds = links?.map((l: any) => l.profiles?.equipe_id).filter(Boolean) || []
-      if (teamIds.length > 0) {
-        query = query.in('equipe_id', teamIds)
+      const activeChild = parentChildren.find(c => c.id === activeChildId)
+      if (activeChild?.equipe_id) {
+        query = query.eq('equipe_id', activeChild.equipe_id)
       } else {
         setEvents([])
         return
@@ -2330,7 +2963,10 @@ function EventsPage({
                   ) : (
                     <>
                       <strong>Présences de mes enfants</strong>
-                      {myChildren.filter(c => c.equipe_id === event.equipe_id).map(child => {
+                      {(() => {
+                        const child = parentChildren.find(c => c.id === activeChildId);
+                        if (!child) return <p className="muted" style={{ margin: 0 }}>Aucun enfant sélectionné ou actif.</p>;
+                        
                         const childIsConvoked = event.type === 'entrainement' ? true : convocations.some((c) => c.profile_id === child.id)
                         const childPresence = presences.find((p) => p.profile_id === child.id) ?? null
                         const childVehicle = vehicles.find((v) => v.owner_profile_id === child.id) ?? null
@@ -2343,7 +2979,7 @@ function EventsPage({
                         return (
                           <div key={child.id} style={{ padding: '0.5rem', background: 'var(--bg-color)', borderRadius: '6px', marginBottom: '0.5rem' }}>
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
-                              <span>{child.nom}</span>
+                              <span>Présence pour <strong>{child.nom}</strong></span>
                               <span className="muted" style={{ fontSize: '0.9rem' }}>
                                 Statut: <strong>{childPresence ? childPresence.statut : '—'}</strong>
                               </span>
@@ -2392,7 +3028,7 @@ function EventsPage({
                             </div>
                           </div>
                         )
-                      })}
+                      })()}
                     </>
                   )}
                 </div>
@@ -2628,12 +3264,16 @@ function ChatPage({
   userId,
   role,
   equipe,
+  parentChildren,
+  activeChildId,
 }: {
   club: ClubRow | null
   authorName: string | null
   userId: string | null
   role: Role | null
   equipe: EquipeRow | null
+  parentChildren: Array<{ id: string; nom: string; equipe_id: string | null; team_name: string; team_category: string; is_approved: boolean }>
+  activeChildId: string
 }) {
   const [messages, setMessages] = useState<ChatMessageRow[]>([])
   const [draft, setDraft] = useState('')
@@ -2643,6 +3283,8 @@ function ChatPage({
 
   const chatRestrictedForPlayers = Boolean(club?.chat_restricted) && role === 'joueur'
 
+  const activeChild = role === 'parent' ? parentChildren.find(c => c.id === activeChildId) : null
+  const targetEquipeId = role === 'parent' ? activeChild?.equipe_id : equipe?.id
 
   useEffect(() => {
     if (!supabase) {
@@ -2665,8 +3307,8 @@ function ChatPage({
         .select('id, club_id, author_id, author_name, text, created_at, equipe_id')
         .eq('club_id', club.id)
 
-      if (equipe?.id) {
-        query = query.eq('equipe_id', equipe.id)
+      if (targetEquipeId) {
+        query = query.eq('equipe_id', targetEquipeId)
       } else {
         query = query.is('equipe_id', null)
       }
@@ -2686,7 +3328,7 @@ function ChatPage({
       setMessages((data as ChatMessageRow[]) ?? [])
     })()
 
-    const channel = supabase.channel(`chat:${club.id}:${equipe?.id ?? 'global'}`)
+    const channel = supabase.channel(`chat:${club.id}:${targetEquipeId ?? 'global'}`)
     channel
       .on(
         'postgres_changes',
@@ -2694,7 +3336,7 @@ function ChatPage({
           event: 'INSERT',
           schema: 'public',
           table: 'chat_messages',
-          filter: equipe?.id ? `club_id=eq.${club.id}&equipe_id=eq.${equipe.id}` : `club_id=eq.${club.id}`
+          filter: targetEquipeId ? `club_id=eq.${club.id}&equipe_id=eq.${targetEquipeId}` : `club_id=eq.${club.id}`
         },
         (payload) => {
           const incoming = payload.new as ChatMessageRow
@@ -2707,7 +3349,7 @@ function ChatPage({
           event: 'DELETE',
           schema: 'public',
           table: 'chat_messages',
-          filter: equipe?.id ? `club_id=eq.${club.id}&equipe_id=eq.${equipe.id}` : `club_id=eq.${club.id}`
+          filter: targetEquipeId ? `club_id=eq.${club.id}&equipe_id=eq.${targetEquipeId}` : `club_id=eq.${club.id}`
         },
         (payload) => {
           const removed = payload.old as { id?: string }
@@ -2726,7 +3368,7 @@ function ChatPage({
       }
       channelRef.current = null
     }
-  }, [club?.id, equipe?.id])
+  }, [club?.id, targetEquipeId])
 
   const sendMessage = async () => {
     setError(null)
@@ -2762,7 +3404,7 @@ function ChatPage({
     try {
       const payload = {
         club_id: club.id,
-        equipe_id: equipe?.id ?? null,
+        equipe_id: targetEquipeId ?? null,
         author_id: userId,
         author_name: authorName ?? 'Moi',
         text,
@@ -2794,7 +3436,7 @@ function ChatPage({
     <section className="page tests-chat-page">
       <header className="page-title">
         <h2>Chat equipe realtime</h2>
-        <p>Messages internes de l'equipe</p>
+        <p>Messages internes de {role === 'parent' && activeChild ? `l'équipe de ${activeChild.nom}` : "l'equipe"}</p>
       </header>
 
       <article className="panel chat-panel">
@@ -2844,11 +3486,15 @@ function TestsPage({
   role,
   club,
   equipe,
+  parentChildren,
+  activeChildId,
 }: {
   userId: string | null
   role: Role | null
   club: ClubRow | null
   equipe: EquipeRow | null
+  parentChildren: Array<{ id: string; nom: string; equipe_id: string | null; team_name: string; team_category: string; is_approved: boolean }>
+  activeChildId: string
 }) {
   const [players, setPlayers] = useState<Array<{ id: string; nom: string }>>([])
   const [selectedPlayerId, setSelectedPlayerId] = useState<string>('')
@@ -2871,6 +3517,17 @@ function TestsPage({
   const [activeLevel, setActiveLevel] = useState(1)
   const [saving, setSaving] = useState(false)
 
+  // Custom description editing states
+  const [editingDescription, setEditingDescription] = useState(false)
+  const [editedDescriptionText, setEditedDescriptionText] = useState('')
+  const [editedLevelNameText, setEditedLevelNameText] = useState('')
+
+  // Custom image upload/display states
+  const [uploadingImage, setUploadingImage] = useState(false)
+  const [imageTimestamp, setImageTimestamp] = useState(Date.now())
+  const [mediaSrc, setMediaSrc] = useState<string>('')
+  const [customImageExists, setCustomImageExists] = useState(false)
+
   // Performance state
   const [performanceHistory, setPerformanceHistory] = useState<any[]>([])
   const [perfType, setPerfType] = useState('Vitesse (20m)')
@@ -2888,13 +3545,15 @@ function TestsPage({
 
   const canManage = role === 'admin' || role === 'coach' || role === 'super_admin'
   const canPickPlayers = Boolean(supabase) && canManage && Boolean(userId)
+  const activeChild = role === 'parent' ? parentChildren?.find(c => c.id === activeChildId) : null
 
   const activeProfileId = useMemo(() => {
     if (!supabase) return null
     if (!userId) return null
+    if (role === 'parent' && activeChildId) return activeChildId
     if (!canManage) return userId
     return selectedPlayerId || userId
-  }, [canManage, selectedPlayerId, userId])
+  }, [canManage, role, selectedPlayerId, userId, activeChildId])
 
   const categoryIcons: Record<string, string> = {
     Technique: '⚽',
@@ -2916,7 +3575,7 @@ function TestsPage({
   const competenciesForCategory = useMemo(
     () =>
       competencies
-        .filter((c) => c.category.toLowerCase() === activeCategoryId.toLowerCase())
+        .filter((c) => c.category?.toLowerCase() === activeCategoryId?.toLowerCase())
         .reduce(
           (acc, c) => {
             const key = c.competency_name
@@ -2941,6 +3600,15 @@ function TestsPage({
     () => levelsForActiveSkill.find((lvl) => lvl.level_rank === activeLevel) ?? levelsForActiveSkill[0],
     [activeLevel, levelsForActiveSkill],
   )
+
+  // Sync editing text boxes when the active level or active skill changes
+  useEffect(() => {
+    if (activeLevelDetails) {
+      setEditedDescriptionText(activeLevelDetails.level_description || '')
+      setEditedLevelNameText(activeLevelDetails.level_name || '')
+      setEditingDescription(false)
+    }
+  }, [activeLevelDetails])
 
   // Load competency framework from database
   useEffect(() => {
@@ -2999,6 +3667,7 @@ function TestsPage({
     let ignore = false
 
     void (async () => {
+      let list: Array<{ id: string; nom: string }> = []
       let query = supabase
         .from('profiles')
         .select('id, nom, role, club_id, equipe_id')
@@ -3017,8 +3686,9 @@ function TestsPage({
         setPlayers([])
         return
       }
+      list = ((data as Array<{ id: string; nom: string }>) ?? []).map((row) => ({ id: row.id, nom: row.nom }))
 
-      const list = ((data as Array<{ id: string; nom: string }>) ?? []).map((row) => ({ id: row.id, nom: row.nom }))
+      if (ignore) return
       setPlayers(list)
 
       if (!selectedPlayerId && list.length > 0) {
@@ -3029,7 +3699,7 @@ function TestsPage({
     return () => {
       ignore = true
     }
-  }, [canPickPlayers, club?.id, equipe?.id, role, selectedPlayerId])
+  }, [canPickPlayers, club?.id, equipe?.id, role, selectedPlayerId, userId])
 
   // Load player competency levels
   useEffect(() => {
@@ -3097,6 +3767,39 @@ function TestsPage({
       setActiveLevel(levelsForActiveSkill[0].level_rank)
     }
   }, [activeLevel, levelsForActiveSkill])
+
+  const handleUpdateDescription = async () => {
+    if (!supabase || !activeLevelDetails || !userId) return
+    if (!canManage) return
+
+    setSaving(true)
+
+    try {
+      const { error } = await supabase
+        .from('competency_framework')
+        .update({
+          level_name: editedLevelNameText,
+          level_description: editedDescriptionText
+        })
+        .eq('id', activeLevelDetails.id)
+
+      if (error) throw error
+
+      setCompetencies(prev => 
+        prev.map(c => 
+          c.id === activeLevelDetails.id 
+            ? { ...c, level_name: editedLevelNameText, level_description: editedDescriptionText } 
+            : c
+        )
+      )
+      setEditingDescription(false)
+    } catch (err) {
+      console.error("Error updating competency description:", err)
+      alert("Erreur lors de la modification : " + formatSupabaseError(err))
+    } finally {
+      setSaving(false)
+    }
+  }
 
   const handleSetLevel = async (competencyId: string, levelRank: number) => {
     if (!supabase || !activeProfileId || !userId) return
@@ -3263,6 +3966,72 @@ function TestsPage({
     }
   }
 
+  // Synchroniser mediaSrc avec l'illustration personnalisée en priorité
+  useEffect(() => {
+    if (!club?.id) return
+    const safeCat = slugify(activeCategoryId)
+    const safeSkill = slugify(activeSkillName)
+    const customPath = `tests/${club.id}/${safeCat}/${safeSkill}/level-${activeLevel}.jpg`
+    const customUrl = supabase ? supabase.storage.from('club-logos').getPublicUrl(customPath).data.publicUrl : ''
+    setMediaSrc(customUrl ? `${customUrl}?t=${imageTimestamp}` : '')
+    setCustomImageExists(false)
+  }, [activeCategoryId, activeSkillName, activeLevel, imageTimestamp, club?.id])
+
+  const handleUploadImage = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file || !supabase || !club?.id) return
+
+    setUploadingImage(true)
+    try {
+      const safeCat = slugify(activeCategoryId)
+      const safeSkill = slugify(activeSkillName)
+      const customPath = `tests/${club.id}/${safeCat}/${safeSkill}/level-${activeLevel}.jpg`
+
+      const { error: uploadError } = await supabase.storage
+        .from('club-logos')
+        .upload(customPath, file, { upsert: true, contentType: file.type })
+
+      if (uploadError) throw uploadError
+
+      setImageTimestamp(Date.now())
+      alert('Illustration mise à jour avec succès ! ✓')
+    } catch (err) {
+      console.error(err)
+      alert("Erreur lors de l'upload de l'image: " + formatSupabaseError(err))
+    } finally {
+      setUploadingImage(false)
+    }
+  }
+
+  const handleDeleteImage = async () => {
+    if (!supabase || !club?.id) return
+
+    const confirmDelete = window.confirm("Voulez-vous vraiment supprimer l'illustration personnalisée et revenir à l'image par défaut ?")
+    if (!confirmDelete) return
+
+    setUploadingImage(true)
+    try {
+      const safeCat = slugify(activeCategoryId)
+      const safeSkill = slugify(activeSkillName)
+      const customPath = `tests/${club.id}/${safeCat}/${safeSkill}/level-${activeLevel}.jpg`
+
+      const { error: deleteError } = await supabase.storage
+        .from('club-logos')
+        .remove([customPath])
+
+      if (deleteError) throw deleteError
+
+      setCustomImageExists(false)
+      setImageTimestamp(Date.now())
+      alert('Illustration supprimée avec succès ! ✓')
+    } catch (err) {
+      console.error(err)
+      alert("Erreur lors de la suppression de l'image: " + formatSupabaseError(err))
+    } finally {
+      setUploadingImage(false)
+    }
+  }
+
   // Media path logic
   const getMediaPath = (cat: string, skill: string, lvl: number) => {
     const safeCat = slugify(cat)
@@ -3274,7 +4043,7 @@ function TestsPage({
     <section className="page tests-page">
       <header className="page-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div>
-          <h2>Tests & Compétences</h2>
+          <h2>{role === 'parent' && activeChild ? `Tests de ${activeChild.nom || "l'enfant"}` : 'Tests & Compétences'}</h2>
           <p>Évaluation des performances et suivi technique</p>
         </div>
         <div className="view-toggle">
@@ -3383,53 +4152,221 @@ function TestsPage({
                 </div>
 
                 <div className="level-card-content">
-                  <h4>{activeLevelDetails?.level_name || `Niveau ${activeLevel}`}</h4>
-                  <p>{activeLevelDetails?.level_description || "Description non disponible."}</p>
-
-                  {canManage && activeLevelDetails && (
-                    <div style={{ marginTop: '1rem', display: 'grid', gap: '0.5rem' }}>
-                      <button
-                        className="primary-button"
-                        style={{ width: 'fit-content', padding: '0.5rem 1rem', fontSize: '0.8rem' }}
-                        onClick={() => handleSetLevel(activeLevelDetails.id, activeLevel)}
-                        disabled={saving}
-                      >
-                        {saving ? 'Validation...' : `Valider Niveau ${activeLevel}`}
-                      </button>
+                  {editingDescription ? (
+                    <div style={{ display: 'grid', gap: '1rem' }}>
+                      <label style={{ display: 'grid', gap: '0.25rem' }}>
+                        <span className="muted" style={{ fontSize: '0.8rem', fontWeight: 600 }}>Nom du niveau</span>
+                        <input
+                          type="text"
+                          value={editedLevelNameText}
+                          onChange={(e) => setEditedLevelNameText(e.target.value)}
+                          style={{
+                            width: '100%',
+                            padding: '0.6rem',
+                            borderRadius: '0.5rem',
+                            border: '1px solid rgba(0, 243, 255, 0.3)',
+                            background: 'rgba(30, 41, 59, 0.7)',
+                            color: 'var(--text-color, #f8fafc)',
+                            fontSize: '0.9rem'
+                          }}
+                        />
+                      </label>
+                      <label style={{ display: 'grid', gap: '0.25rem' }}>
+                        <span className="muted" style={{ fontSize: '0.8rem', fontWeight: 600 }}>Description</span>
+                        <textarea
+                          rows={3}
+                          value={editedDescriptionText}
+                          onChange={(e) => setEditedDescriptionText(e.target.value)}
+                          style={{
+                            width: '100%',
+                            padding: '0.6rem',
+                            borderRadius: '0.5rem',
+                            border: '1px solid rgba(0, 243, 255, 0.3)',
+                            background: 'rgba(30, 41, 59, 0.7)',
+                            color: 'var(--text-color, #f8fafc)',
+                            fontSize: '0.9rem',
+                            resize: 'vertical'
+                          }}
+                        />
+                      </label>
+                      <div style={{ display: 'flex', gap: '0.75rem', marginTop: '0.25rem' }}>
+                        <button
+                          type="button"
+                          className="primary-button"
+                          style={{ padding: '0.5rem 1.25rem', fontSize: '0.85rem', background: 'var(--neon-green)', borderColor: 'var(--neon-green)', color: '#000', fontWeight: 'bold' }}
+                          onClick={handleUpdateDescription}
+                          disabled={saving}
+                        >
+                          {saving ? 'Enregistrement...' : 'Enregistrer'}
+                        </button>
+                        <button
+                          type="button"
+                          className="link-button"
+                          style={{ padding: '0.5rem 1.25rem', fontSize: '0.85rem', color: '#94a3b8' }}
+                          onClick={() => {
+                            setEditingDescription(false)
+                            if (activeLevelDetails) {
+                              setEditedDescriptionText(activeLevelDetails.level_description || '')
+                              setEditedLevelNameText(activeLevelDetails.level_name || '')
+                            }
+                          }}
+                        >
+                          Annuler
+                        </button>
+                      </div>
                     </div>
+                  ) : (
+                    <>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                        <h4 style={{ margin: 0 }}>{activeLevelDetails?.level_name || `Niveau ${activeLevel}`}</h4>
+                        {canManage && activeLevelDetails && (
+                          <button
+                            type="button"
+                            className="link-button"
+                            style={{ 
+                              padding: '0.25rem 0.5rem', 
+                              fontSize: '0.8rem', 
+                              display: 'inline-flex', 
+                              alignItems: 'center', 
+                              gap: '0.25rem',
+                              color: 'var(--neon-blue, #00f3ff)',
+                              background: 'rgba(0, 243, 255, 0.1)',
+                              border: '1px solid rgba(0, 243, 255, 0.2)',
+                              borderRadius: '0.25rem',
+                              cursor: 'pointer'
+                            }}
+                            onClick={() => setEditingDescription(true)}
+                          >
+                            ✏️ Modifier
+                          </button>
+                        )}
+                      </div>
+                      <p>{activeLevelDetails?.level_description || "Description non disponible."}</p>
+
+                      {canManage && activeLevelDetails && (
+                        <div style={{ marginTop: '1.25rem', display: 'grid', gap: '0.5rem' }}>
+                          <button
+                            className="primary-button"
+                            style={{ width: 'fit-content', padding: '0.5rem 1.25rem', fontSize: '0.8rem' }}
+                            onClick={() => handleSetLevel(activeLevelDetails.id, activeLevel)}
+                            disabled={saving}
+                          >
+                            {saving ? 'Validation...' : `Valider Niveau ${activeLevel}`}
+                          </button>
+                        </div>
+                      )}
+                    </>
                   )}
                 </div>
 
-                <div className="media-container">
-                  <img
-                    key={getMediaPath(activeCategoryId, activeSkillName, activeLevel)}
-                    src={getMediaPath(activeCategoryId, activeSkillName, activeLevel)}
-                    alt="Illustration du test"
-                    className="media-content"
-                    style={{ display: 'none', borderRadius: '0.75rem' }}
-                    onLoad={(e) => {
-                      e.currentTarget.style.display = 'block'
-                      const p = e.currentTarget.nextElementSibling as HTMLElement
-                      if (p) p.style.display = 'none'
-                    }}
-                    onError={(e) => {
-                      e.currentTarget.style.display = 'none'
-                      const p = e.currentTarget.nextElementSibling as HTMLElement
-                      if (p) p.style.display = 'flex'
-                    }}
-                  />
-                  <div className="media-placeholder" style={{ display: 'flex' }}>
-                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--muted)" strokeWidth="1.5">
-                      <rect x="3" y="3" width="18" height="18" rx="2" />
-                      <circle cx="8.5" cy="8.5" r="1.5" />
-                      <path d="M21 15l-5-5L5 21" />
-                    </svg>
-                    <p style={{ marginTop: '1rem' }}>Illustration du test</p>
-                    <p className="muted" style={{ fontSize: '0.8rem' }}>
-                      Placez votre fichier dans :<br />
-                      <code>{getMediaPath(activeCategoryId, activeSkillName, activeLevel)}</code>
-                    </p>
+                <div className="media-container" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                  <div style={{ position: 'relative', width: '100%', minHeight: '150px' }}>
+                    <img
+                      key={`${activeCategoryId}-${activeSkillName}-${activeLevel}-${imageTimestamp}`}
+                      src={mediaSrc || getMediaPath(activeCategoryId, activeSkillName, activeLevel)}
+                      alt="Illustration du test"
+                      className="media-content"
+                      style={{ display: 'none', borderRadius: '0.75rem', width: '100%' }}
+                      onLoad={(e) => {
+                        e.currentTarget.style.display = 'block'
+                        const p = e.currentTarget.nextElementSibling as HTMLElement
+                        if (p) p.style.display = 'none'
+
+                        // Set customImageExists if the loaded URL is our Supabase Storage URL
+                        if (e.currentTarget.src.includes('supabase.co')) {
+                          setCustomImageExists(true)
+                        } else {
+                          setCustomImageExists(false)
+                        }
+                      }}
+                      onError={(e) => {
+                        const staticPath = getMediaPath(activeCategoryId, activeSkillName, activeLevel)
+                        const target = e.currentTarget
+                        if (!target.src.endsWith(staticPath)) {
+                          target.src = staticPath
+                        } else {
+                          target.style.display = 'none'
+                          const p = target.nextElementSibling as HTMLElement
+                          if (p) p.style.display = 'flex'
+                        }
+                      }}
+                    />
+                    <div className="media-placeholder" style={{ display: 'flex', width: '100%' }}>
+                      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--muted)" strokeWidth="1.5">
+                        <rect x="3" y="3" width="18" height="18" rx="2" />
+                        <circle cx="8.5" cy="8.5" r="1.5" />
+                        <path d="M21 15l-5-5L5 21" />
+                      </svg>
+                      <p style={{ marginTop: '1rem' }}>Illustration du test</p>
+                      <p className="muted" style={{ fontSize: '0.8rem' }}>
+                        Image manquante. Utilisez le bouton ci-dessous pour l'ajouter.
+                      </p>
+                    </div>
                   </div>
+
+                  {canManage && (
+                    <div style={{ display: 'flex', justifyContent: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                      <label
+                        className="skill-tab"
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '0.5rem',
+                          cursor: 'pointer',
+                          padding: '0.5rem 1rem',
+                          fontSize: '0.85rem',
+                          background: 'rgba(0, 243, 255, 0.1)',
+                          border: '1px solid rgba(0, 243, 255, 0.2)',
+                          borderRadius: '8px',
+                          color: 'var(--neon-cyan)',
+                          fontWeight: 600,
+                          margin: 0
+                        }}
+                      >
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                          <polyline points="17 8 12 3 7 8" />
+                          <line x1="12" y1="3" x2="12" y2="15" />
+                        </svg>
+                        {uploadingImage ? 'Chargement...' : (customImageExists ? "Changer l'image" : 'Ajouter une image')}
+                        <input
+                          type="file"
+                          accept="image/*"
+                          onChange={(e) => void handleUploadImage(e)}
+                          disabled={uploadingImage}
+                          style={{ display: 'none' }}
+                        />
+                      </label>
+
+                      {customImageExists && (
+                        <button
+                          type="button"
+                          className="skill-tab"
+                          onClick={() => void handleDeleteImage()}
+                          disabled={uploadingImage}
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '0.5rem',
+                            padding: '0.5rem 1rem',
+                            fontSize: '0.85rem',
+                            background: 'rgba(255, 0, 85, 0.12)',
+                            border: '1px solid #ff0055',
+                            borderRadius: '8px',
+                            color: '#ff3366',
+                            fontWeight: 600,
+                            margin: 0
+                          }}
+                        >
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <path d="M3 6h18" />
+                            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                          </svg>
+                          Supprimer
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </div>
               </article>
             </div>
@@ -3729,6 +4666,18 @@ function SettingsPage({
   const [notifications, setNotifications] = useState(true)
   const [profileRole, setProfileRole] = useState<Role | null>(currentRole)
   const [teams, setTeams] = useState<Array<{ id: string; nom: string; categorie: string }>>([])
+  const [refreshTrigger, setRefreshTrigger] = useState(0)
+
+  // Category management states
+  const [newCategoryName, setNewCategoryName] = useState('')
+  const [newCategoryValue, setNewCategoryValue] = useState('U13')
+  const [categoryBusy, setCategoryBusy] = useState(false)
+  const [categoryError, setCategoryError] = useState<string | null>(null)
+  const [categoryInfo, setCategoryInfo] = useState<string | null>(null)
+
+  // Chat reset target state
+  const [resetTarget, setResetTarget] = useState<string>('global')
+
   const [inviteRole, setInviteRole] = useState<Role>('joueur')
   const [superAdminInviteKind, setSuperAdminInviteKind] = useState<'super_admin' | 'club_admin_create'>(
     'club_admin_create',
@@ -3947,15 +4896,22 @@ function SettingsPage({
       return
     }
 
+    const confirmReset = window.confirm(
+      "Voulez-vous vraiment vider l'historique de cette discussion ? Cette action est irréversible."
+    )
+    if (!confirmReset) return
+
     setChatResetBusy(true)
     try {
-      const { error: rpcError } = await supabase.rpc('reset_chat', {
+      const targetEquipeId = resetTarget === 'global' ? null : resetTarget
+      const { error: rpcError } = await supabase.rpc('reset_chat_v2', {
         p_club_id: club.id,
+        p_equipe_id: targetEquipeId,
       })
       if (rpcError) {
         throw rpcError
       }
-      setChatInfo('Chat réinitialisé ✓')
+      setChatInfo('Historique du chat vidé avec succès ✓')
     } catch (caught) {
       setChatError(formatSupabaseError(caught))
     } finally {
@@ -3987,6 +4943,7 @@ function SettingsPage({
       const equipeId = (row?.equipe_id as string | null) ?? ''
       if (!ignore && equipeId) {
         setInviteTeamId(equipeId)
+        setResetTarget(equipeId)
       }
     })()
 
@@ -4028,7 +4985,84 @@ function SettingsPage({
     return () => {
       ignore = true
     }
-  }, [club?.id, inviteTeamId, profileRole])
+  }, [club?.id, inviteTeamId, profileRole, refreshTrigger])
+
+  const handleCreateCategory = async () => {
+    setCategoryError(null)
+    setCategoryInfo(null)
+
+    if (!supabase || !club?.id) {
+      setCategoryError('Configuration manquante')
+      return
+    }
+
+    const nom = newCategoryName.trim()
+    const cat = newCategoryValue.trim()
+    if (!nom) {
+      setCategoryError('Nom de l’équipe requis (ex: "Équipe A")')
+      return
+    }
+    if (!cat) {
+      setCategoryError('Nom de la catégorie requis (ex: "U13")')
+      return
+    }
+
+    setCategoryBusy(true)
+    try {
+      const invitationPrefix = club.slug.toUpperCase()
+      const suffix = Math.random().toString(36).slice(2, 7).toUpperCase()
+      const code = `${invitationPrefix}-JOIN-${cat.toUpperCase()}-${suffix}`
+
+      const { error } = await supabase
+        .from('equipes')
+        .insert({
+          club_id: club.id,
+          nom,
+          categorie: cat,
+          code_invitation: code,
+        })
+
+      if (error) throw error
+
+      setCategoryInfo(`Catégorie ${cat} (${nom}) créée avec succès ✓`)
+      setNewCategoryName('')
+      setRefreshTrigger((prev) => prev + 1)
+    } catch (caught) {
+      setCategoryError(formatSupabaseError(caught))
+    } finally {
+      setCategoryBusy(false)
+    }
+  }
+
+  const handleDeleteCategory = async (teamId: string, teamLabel: string) => {
+    setCategoryError(null)
+    setCategoryInfo(null)
+
+    if (!supabase || !club?.id) {
+      setCategoryError('Configuration manquante')
+      return
+    }
+
+    const confirmDelete = window.confirm(`Voulez-vous vraiment supprimer la catégorie "${teamLabel}" ? Cela supprimera tous les joueurs, entraînements, matchs et messages associés.`)
+    if (!confirmDelete) return
+
+    setCategoryBusy(true)
+    try {
+      const { error } = await supabase
+        .from('equipes')
+        .delete()
+        .eq('id', teamId)
+
+      if (error) throw error
+
+      setCategoryInfo(`Catégorie "${teamLabel}" supprimée ✓`)
+      setRefreshTrigger((prev) => prev + 1)
+    } catch (caught) {
+      setCategoryError(formatSupabaseError(caught))
+    } finally {
+      setCategoryBusy(false)
+    }
+  }
 
   const generateInviteCode = (prefix: string, role: Role) => {
     const stamp = new Date().toISOString().slice(0, 10).replaceAll('-', '')
@@ -4241,6 +5275,72 @@ function SettingsPage({
           </article>
         )}
 
+        {profileRole === 'admin' && (
+          <article className="panel setting-card">
+            <h3>Catégories du Club</h3>
+            <p className="muted">Gérez les catégories (équipes) de votre club.</p>
+
+            {categoryError && <p className="form-feedback error">{categoryError}</p>}
+            {categoryInfo && <p className="form-feedback info">{categoryInfo}</p>}
+
+            <div className="teams-list-admin" style={{ margin: '1rem 0', maxHeight: '200px', overflowY: 'auto', display: 'grid', gap: '0.5rem' }}>
+              {teams.length === 0 ? (
+                <p className="muted">Aucune catégorie créée pour le moment.</p>
+              ) : (
+                teams.map((t) => (
+                  <div key={t.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.5rem', background: 'rgba(255, 255, 255, 0.05)', borderRadius: '6px' }}>
+                    <div>
+                      <strong>{t.categorie}</strong> <span className="muted">— {t.nom}</span>
+                    </div>
+                    <button
+                      type="button"
+                      className="link-button"
+                      style={{ color: '#ef4444', padding: '0.25rem 0.5rem' }}
+                      onClick={() => void handleDeleteCategory(t.id, `${t.categorie} — ${t.nom}`)}
+                      disabled={categoryBusy}
+                    >
+                      Supprimer
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+
+            <div style={{ display: 'grid', gap: '0.65rem', borderTop: '1px solid rgba(255, 255, 255, 0.1)', paddingTop: '1rem' }}>
+              <h4>Nouvelle catégorie</h4>
+              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                <label style={{ flex: 1 }}>
+                  Catégorie (ex: U13, U15)
+                  <input
+                    value={newCategoryValue}
+                    placeholder="U13"
+                    onChange={(e) => setNewCategoryValue(e.target.value)}
+                    disabled={categoryBusy}
+                  />
+                </label>
+                <label style={{ flex: 2 }}>
+                  Nom de l'équipe (ex: Équipe A)
+                  <input
+                    value={newCategoryName}
+                    placeholder="Équipe A"
+                    onChange={(e) => setNewCategoryName(e.target.value)}
+                    disabled={categoryBusy}
+                  />
+                </label>
+              </div>
+
+              <button
+                type="button"
+                className="primary-button"
+                onClick={() => void handleCreateCategory()}
+                disabled={categoryBusy}
+              >
+                {categoryBusy ? 'Création...' : 'Ajouter la catégorie'}
+              </button>
+            </div>
+          </article>
+        )}
+
         {profileRole !== 'super_admin' && club && (profileRole === 'admin' || profileRole === 'coach') && (
           <article className="panel setting-card">
             <h3>Chat</h3>
@@ -4248,7 +5348,7 @@ function SettingsPage({
             {profileRole === 'admin' && (
               <>
                 <p className="muted">Option: réserver le chat aux coachs/admins.</p>
-                <label className="toggle-row">
+                <label className="toggle-row" style={{ marginBottom: '1.25rem' }}>
                   <span>Chat restreint</span>
                   <input
                     type="checkbox"
@@ -4264,11 +5364,31 @@ function SettingsPage({
               </>
             )}
 
+            <div style={{ display: 'grid', gap: '0.65rem', marginBottom: '1.25rem' }}>
+              <label>
+                Discussion à réinitialiser
+                {profileRole === 'admin' ? (
+                  <select value={resetTarget} onChange={(e) => setResetTarget(e.target.value)} disabled={chatResetBusy}>
+                    <option value="global">Chat général du club</option>
+                    {teams.map((t) => (
+                      <option key={t.id} value={t.id}>
+                        Chat équipe {t.categorie} — {t.nom}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <select value={resetTarget} disabled={true}>
+                    <option value={resetTarget}>Mon équipe</option>
+                  </select>
+                )}
+              </label>
+            </div>
+
             {chatError && <p className="form-feedback error">{chatError}</p>}
             {chatInfo && <p className="form-feedback info">{chatInfo}</p>}
 
             <div className="invite-actions">
-              <button type="button" className="primary-button" onClick={() => void resetChat()} disabled={chatResetBusy}>
+              <button type="button" className="primary-button" onClick={() => void resetChat()} disabled={chatResetBusy} style={{ background: '#ef4444', borderColor: '#ef4444' }}>
                 {chatResetBusy ? 'Réinitialisation...' : 'Réinitialiser le chat'}
               </button>
             </div>
@@ -4398,9 +5518,10 @@ function BottomNav({ role }: { role: Role | null }) {
     <nav className="bottom-nav">
       {!isSuperAdmin && <NavLink to="/dashboard">Accueil</NavLink>}
       {!isSuperAdmin && !isParent && <NavLink to="/team">Equipe</NavLink>}
+      {!isSuperAdmin && <NavLink to="/strategy">Stratégie</NavLink>}
       {!isSuperAdmin && <NavLink to="/events">Evenements</NavLink>}
       {!isSuperAdmin && <NavLink to="/chat">Chat</NavLink>}
-      {!isSuperAdmin && !isParent && <NavLink to="/tests">Tests</NavLink>}
+      {!isSuperAdmin && <NavLink to="/tests">Tests</NavLink>}
       <NavLink to="/settings">Parametres</NavLink>
     </nav>
   )
@@ -4423,6 +5544,57 @@ function AppShell() {
   const [selectedEquipeId, setSelectedEquipeId] = useState<string | null>(null)
   const [club, setClub] = useState<ClubRow | null>(null)
   const [needsClubSetup, setNeedsClubSetup] = useState(false)
+
+  // Parent children context
+  const [parentChildren, setParentChildren] = useState<Array<{ id: string; nom: string; equipe_id: string | null; team_name: string; team_category: string; is_approved: boolean }>>([])
+  const [activeChildId, setActiveChildId] = useState<string>('')
+
+  const refreshParentChildren = async (pUserId?: string, pRole?: string | null) => {
+    const currentUserId = pUserId || userId
+    const currentRole = pRole !== undefined ? pRole : role
+    if (!supabase || currentRole !== 'parent' || !currentUserId) {
+      setParentChildren([])
+      setActiveChildId('')
+      return
+    }
+
+    const { data: links, error: linksError } = await supabase
+      .from('parent_children')
+      .select('*, profiles!child_id(*, equipes(id, nom, categorie))')
+      .eq('parent_id', currentUserId)
+
+    if (linksError || !links) {
+      setParentChildren([])
+      setActiveChildId('')
+      return
+    }
+
+    const childrenList = links
+      .map((l: any) => {
+        const p = l.profiles
+        if (!p) return null
+        return {
+          id: p.id,
+          nom: p.nom,
+          equipe_id: p.equipe_id,
+          is_approved: p.is_approved,
+          team_name: p.equipes ? `${p.equipes.nom} (${p.equipes.categorie})` : 'Sans équipe',
+          team_category: p.equipes ? p.equipes.categorie : '',
+        }
+      })
+      .filter(Boolean)
+
+    setParentChildren(childrenList)
+    if (childrenList.length > 0) {
+      const approved = childrenList.find((c) => c.is_approved)
+      setActiveChildId((prev) => {
+        if (prev && childrenList.some((c) => c.id === prev)) return prev
+        return approved ? approved.id : childrenList[0].id
+      })
+    } else {
+      setActiveChildId('')
+    }
+  }
 
   useEffect(() => {
     if (!supabase) {
@@ -4471,6 +5643,8 @@ function AppShell() {
       setClub(null)
       setNeedsClubSetup(false)
       setProfileReady(false)
+      setParentChildren([])
+      setActiveChildId('')
       return
     }
 
@@ -4507,7 +5681,7 @@ function AppShell() {
 
         const { data: equipeData } = await supabase
           .from('equipes')
-          .select('id, nom, categorie')
+          .select('id, nom, categorie, strategy_shared, strategy_zoom')
           .eq('id', minimal.equipe_id)
           .maybeSingle()
 
@@ -4524,6 +5698,10 @@ function AppShell() {
       setAuthorName(nextProfile?.nom ?? null)
       setNeedsClubSetup(Boolean(nextProfile?.needs_club_setup))
       setProfileReady(true)
+
+      if (nextProfile?.role === 'parent') {
+        void refreshParentChildren(userId, nextProfile.role)
+      }
 
       if (nextProfile?.club_id) {
         const { data: clubData } = await supabase
@@ -4574,7 +5752,7 @@ function AppShell() {
 
       const { data: equipeData } = await supabase
         .from('equipes')
-        .select('id, nom, categorie')
+        .select('id, nom, categorie, strategy_shared, strategy_zoom')
         .eq('id', targetEquipeId)
         .maybeSingle()
 
@@ -4600,7 +5778,7 @@ function AppShell() {
     if (userRole === 'admin') return true
     if (userRole === 'coach') return true
     if (userRole === 'parent') {
-      return path === '/dashboard' || path === '/events' || path === '/chat' || path === '/settings'
+      return path === '/dashboard' || path === '/events' || path === '/chat' || path === '/tests' || path === '/settings'
     }
     // joueur
     return path === '/dashboard' || path === '/events' || path === '/chat' || path === '/tests' || path === '/team' || path === '/settings'
@@ -4718,11 +5896,12 @@ function AppShell() {
           path="/club-setup"
           element={userId ? <ClubSetupPage userId={userId} role={role} needsClubSetup={needsClubSetup} /> : <LoginPage />}
         />
-        <Route path="/dashboard" element={<DashboardPage club={club} role={role} equipe={equipe} userId={userId} authorName={authorName} />} />
+        <Route path="/dashboard" element={<DashboardPage club={club} role={role} equipe={equipe} userId={userId} authorName={authorName} parentChildren={parentChildren} activeChildId={activeChildId} setActiveChildId={setActiveChildId} refreshParentChildren={refreshParentChildren} />} />
         <Route path="/team" element={<TeamPage club={club} equipe={equipe} role={role} />} />
-        <Route path="/events" element={<EventsPage equipe={equipe} userId={userId} club={club} role={role} />} />
-        <Route path="/chat" element={<ChatPage club={club} authorName={authorName} userId={userId} role={role} equipe={equipe} />} />
-        <Route path="/tests" element={<TestsPage userId={userId} role={role} club={club} equipe={equipe} />} />
+        <Route path="/strategy" element={<StrategyPage club={club} equipe={equipe} role={role} parentChildren={parentChildren} activeChildId={activeChildId} />} />
+        <Route path="/events" element={<EventsPage equipe={equipe} userId={userId} club={club} role={role} parentChildren={parentChildren} activeChildId={activeChildId} />} />
+        <Route path="/chat" element={<ChatPage club={club} authorName={authorName} userId={userId} role={role} equipe={equipe} parentChildren={parentChildren} activeChildId={activeChildId} />} />
+        <Route path="/tests" element={<TestsPage userId={userId} role={role} club={club} equipe={equipe} parentChildren={parentChildren} activeChildId={activeChildId} />} />
         <Route path="/settings" element={<SettingsPage currentRole={role} userId={userId} club={club} setClub={setClub} />} />
         <Route path="*" element={<LoginPage />} />
       </Routes>
@@ -4732,6 +5911,34 @@ function AppShell() {
   )
 }
 
+class ErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean, error: Error | null }> {
+  constructor(props: { children: ReactNode }) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ padding: '2rem', color: 'white', background: 'red', minHeight: '100vh' }}>
+          <h2>Erreur d'application détectée</h2>
+          <pre style={{ whiteSpace: 'pre-wrap', fontSize: '1rem', marginTop: '1rem' }}>{this.state.error?.message}</pre>
+          <pre style={{ whiteSpace: 'pre-wrap', fontSize: '0.8rem', marginTop: '1rem', color: '#ffaaaa' }}>{this.state.error?.stack}</pre>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 export default function App() {
-  return <AppShell />
+  return (
+    <ErrorBoundary>
+      <AppShell />
+    </ErrorBoundary>
+  )
 }
