@@ -78,6 +78,9 @@ type EventVehicleRow = {
   owner_profile_id: string | null
   label: string | null
   seats_total: number
+  driver_gender?: 'pere' | 'mere' | 'autre' | null
+  has_child_present?: boolean | null
+  passenger_preference?: 'all' | 'women_and_children' | 'men_and_children' | null
   profiles?: { nom?: string } | null
 }
 
@@ -85,6 +88,7 @@ type EventVehicleAssignmentRow = {
   evenement_id: string
   vehicle_id: string
   profile_id: string
+  status?: 'pending' | 'approved' | 'rejected'
   profiles?: { nom?: string } | null
 }
 
@@ -919,6 +923,16 @@ function DashboardPage({
         const { data: lvls } = await supabase.from('player_competency_levels').select('*, competency_framework(*)').eq('profile_id', userId)
         if (!ignore) setMyLevels(lvls || [])
       }
+
+      if (role === 'parent' && club?.id) {
+        const { data: teams } = await supabase.from('equipes').select('*').eq('club_id', club.id).order('categorie')
+        if (!ignore) {
+          setAdminTeams(teams || [])
+          if (teams && teams.length > 0 && !childCategorie) {
+             setChildCategorie(teams[0].id)
+          }
+        }
+      }
     }
 
     loadDashboard()
@@ -1098,27 +1112,32 @@ function DashboardPage({
 
             <div style={{ marginTop: '1rem', padding: '1rem', background: 'var(--bg-color)', borderRadius: '8px' }}>
               <h4 style={{ marginBottom: '0.5rem' }}>Ajouter un enfant</h4>
-              <div style={{ display: 'flex', gap: '0.5rem' }}>
-                <input placeholder="Nom Prénom" value={childNom} onChange={e => setChildNom(e.target.value)} style={{ flex: 1 }} />
-                <select value={childCategorie} onChange={e => setChildCategorie(e.target.value)} style={{ width: '80px' }}>
-                  <option value="U9">U9</option>
-                  <option value="U12">U12</option>
-                  <option value="U15">U15</option>
-                  <option value="U18">U18</option>
-                  <option value="U21">U21</option>
-                  <option value="Seniors">Seniors</option>
+              <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                <input placeholder="Prénom et Nom" value={childNom} onChange={e => setChildNom(e.target.value)} style={{ flex: 1, minWidth: '150px' }} />
+                <select value={childCategorie || (adminTeams[0]?.id ?? '')} onChange={e => setChildCategorie(e.target.value)} style={{ width: '140px' }}>
+                  {adminTeams.map(t => (
+                    <option key={t.id} value={t.id}>{t.categorie} - {t.nom}</option>
+                  ))}
                 </select>
                 <button 
                   className="primary-button" 
-                  disabled={addBusy || !childNom}
+                  disabled={addBusy || !childNom || !adminTeams.length}
                   onClick={async () => {
                     if(!supabase || !userId || !club) return
+                    
+                    const selectedEqId = childCategorie || adminTeams[0]?.id
+                    if (!selectedEqId) return
+                    
+                    const eq = adminTeams.find(t => t.id === selectedEqId)
+                    if (!eq) return
+
                     setAddBusy(true)
                     try {
-                      const finalNom = `${childNom} (${childCategorie})`
+                      const finalNom = `${childNom} (${eq.categorie})`
                       const { data: newId, error: pErr } = await supabase.rpc('create_ghost_profile', {
                         p_nom: finalNom,
-                        p_club_id: club.id
+                        p_club_id: club.id,
+                        p_equipe_id: selectedEqId
                       })
                       if (pErr) throw pErr
                       
@@ -1149,18 +1168,8 @@ function DashboardPage({
                   <div style={{ flex: 1 }}>
                     <strong>{p.nom}</strong>
                   </div>
-                  <select 
-                    id={`team-select-${p.id}`} 
-                    style={{ flex: 1 }}
-                    defaultValue={adminTeams[0]?.id}
-                  >
-                    {adminTeams.map(t => (
-                      <option key={t.id} value={t.id}>{t.categorie} - {t.nom}</option>
-                    ))}
-                  </select>
                   <button className="primary-button" style={{ padding: '0.3rem 0.6rem', fontSize: '0.8rem' }} onClick={async () => {
-                    const sel = document.getElementById(`team-select-${p.id}`) as HTMLSelectElement
-                    const eqId = sel?.value
+                    const eqId = p.equipe_id
                     if (!eqId || !supabase) return
                     try {
                       const { error: vErr } = await supabase.rpc('approve_ghost_profile', {
@@ -1276,6 +1285,8 @@ function TeamPage({
   const [players, setPlayers] = useState<Array<{ id: string; nom: string }>>([])
   const [playersError, setPlayersError] = useState<string | null>(null)
   const [playersBusy, setPlayersBusy] = useState(false)
+  
+  const [adminTeams, setAdminTeams] = useState<any[]>([])
 
   const equipeId = equipe?.id ?? null
 
@@ -1312,7 +1323,15 @@ function TeamPage({
 
   useEffect(() => {
     void refreshPlayers()
-  }, [equipeId])
+    
+    if (role === 'admin' && club?.id) {
+      supabase?.from('equipes')
+        .select('*')
+        .eq('club_id', club.id)
+        .order('categorie')
+        .then(({ data }) => setAdminTeams(data || []))
+    }
+  }, [equipeId, role, club?.id])
 
   useEffect(() => {
     if (!supabase) return
@@ -1376,12 +1395,49 @@ function TeamPage({
                     justifyContent: 'space-between',
                     gap: '0.75rem',
                     alignItems: 'center',
+                    flexWrap: 'wrap'
                   }}
                 >
-                  <strong>{p.nom}</strong>
-                  <span className="chip" style={{ fontSize: '0.75rem', background: 'rgba(0, 243, 255, 0.1)' }}>
-                    Joueur
-                  </span>
+                  <strong style={{ flex: 1 }}>{p.nom}</strong>
+                  
+                  {role === 'admin' && adminTeams.length > 0 ? (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <select 
+                        defaultValue={equipeId || ''}
+                        onChange={async (e) => {
+                          const newEqId = e.target.value;
+                          if (!newEqId || !supabase) return;
+                          if (!confirm(`Voulez-vous vraiment changer la catégorie de ce joueur ?`)) {
+                            e.target.value = equipeId || '';
+                            return;
+                          }
+                          try {
+                            const { error: err } = await supabase.rpc('approve_ghost_profile', {
+                              p_child_id: p.id,
+                              p_equipe_id: newEqId
+                            });
+                            if (err) throw err;
+                            // Remove from current list if moved
+                            if (newEqId !== equipeId) {
+                              setPlayers(prev => prev.filter(x => x.id !== p.id));
+                            }
+                          } catch (err) {
+                            alert('Erreur: ' + (err as Error).message);
+                            e.target.value = equipeId || '';
+                          }
+                        }}
+                        style={{ fontSize: '0.8rem', padding: '0.2rem 0.4rem', height: 'auto', background: 'rgba(0,0,0,0.3)' }}
+                      >
+                        {adminTeams.map(t => (
+                          <option key={t.id} value={t.id}>{t.categorie} - {t.nom}</option>
+                        ))}
+                      </select>
+                    </div>
+                  ) : (
+                    <span className="chip" style={{ fontSize: '0.75rem', background: 'rgba(0, 243, 255, 0.1)' }}>
+                      Joueur
+                    </span>
+                  )}
                 </div>
               ))}
             </div>
@@ -2236,6 +2292,9 @@ function EventsPage({
   const [assignmentsByEvent, setAssignmentsByEvent] = useState<Record<string, EventVehicleAssignmentRow[]>>({})
 
   const [vehicleSeatsDraft, setVehicleSeatsDraft] = useState<Record<string, string>>({})
+  const [vehicleDriverGenderDraft, setVehicleDriverGenderDraft] = useState<Record<string, 'pere' | 'mere' | 'autre' | ''>>({})
+  const [vehicleHasChildDraft, setVehicleHasChildDraft] = useState<Record<string, boolean>>({})
+  const [vehiclePassengerPrefDraft, setVehiclePassengerPrefDraft] = useState<Record<string, 'all' | 'women_and_children' | 'men_and_children'>>({})
   const [independentVehicleLabel, setIndependentVehicleLabel] = useState<Record<string, string>>({})
   const [independentVehicleSeats, setIndependentVehicleSeats] = useState<Record<string, string>>({})
   const [assignPickPlayer, setAssignPickPlayer] = useState<Record<string, string>>({})
@@ -2312,9 +2371,9 @@ function EventsPage({
       .eq('role', 'joueur')
       .order('nom', { ascending: true })
 
-    if (role === 'coach' && equipe?.id) {
+    if (equipe?.id) {
       query = query.eq('equipe_id', equipe.id)
-    } else if (role === 'admin' && club?.id) {
+    } else if (club?.id) {
       query = query.eq('club_id', club.id)
     }
 
@@ -2349,11 +2408,11 @@ function EventsPage({
         .in('evenement_id', eventIds),
       supabase
         .from('event_vehicles')
-        .select('id, evenement_id, owner_profile_id, label, seats_total, profiles:profiles!event_vehicles_owner_profile_id_fkey ( nom )')
+        .select('id, evenement_id, owner_profile_id, label, seats_total, driver_gender, has_child_present, passenger_preference, profiles:profiles!event_vehicles_owner_profile_id_fkey ( nom )')
         .in('evenement_id', eventIds),
       supabase
         .from('event_vehicle_assignments')
-        .select('evenement_id, vehicle_id, profile_id, profiles ( nom )')
+        .select('evenement_id, vehicle_id, profile_id, status, profiles ( nom )')
         .in('evenement_id', eventIds),
     ])
 
@@ -2621,6 +2680,10 @@ function EventsPage({
       return
     }
 
+    const driver_gender = role === 'parent' ? (vehicleDriverGenderDraft[draftKey] || null) : null
+    const has_child_present = role === 'parent' ? (vehicleHasChildDraft[draftKey] ?? true) : null
+    const passenger_preference = role === 'parent' ? (vehiclePassengerPrefDraft[draftKey] || 'all') : null
+
     const { error } = await supabase
       .from('event_vehicles')
       .upsert(
@@ -2629,6 +2692,9 @@ function EventsPage({
           owner_profile_id: targetProfileId,
           label: null,
           seats_total: seats,
+          driver_gender,
+          has_child_present,
+          passenger_preference,
           updated_at: new Date().toISOString(),
         },
         { onConflict: 'evenement_id,owner_profile_id' },
@@ -2711,6 +2777,64 @@ function EventsPage({
       .delete()
       .eq('evenement_id', eventId)
       .eq('profile_id', profileId)
+    if (error) {
+      setDetailsError(formatSupabaseError(error))
+      return
+    }
+
+    await refreshEventDetails([eventId])
+  }
+
+  const requestVehicleSeat = async (eventId: string, vehicleId: string, childId?: string) => {
+    if (!supabase) return
+    if (!userId) return
+    if (role !== 'joueur' && role !== 'parent') return
+
+    const targetProfileId = role === 'parent' && childId ? childId : userId
+
+    const { error } = await supabase.from('event_vehicle_assignments').insert({
+      evenement_id: eventId,
+      vehicle_id: vehicleId,
+      profile_id: targetProfileId,
+      status: 'pending'
+    })
+
+    if (error) {
+      setDetailsError(formatSupabaseError(error))
+      return
+    }
+
+    await refreshEventDetails([eventId])
+  }
+
+  const approveVehicleAssignment = async (eventId: string, vehicleId: string, profileId: string) => {
+    if (!supabase) return
+    
+    const { error } = await supabase
+      .from('event_vehicle_assignments')
+      .update({ status: 'approved' })
+      .eq('evenement_id', eventId)
+      .eq('vehicle_id', vehicleId)
+      .eq('profile_id', profileId)
+
+    if (error) {
+      setDetailsError(formatSupabaseError(error))
+      return
+    }
+
+    await refreshEventDetails([eventId])
+  }
+
+  const rejectVehicleAssignment = async (eventId: string, vehicleId: string, profileId: string) => {
+    if (!supabase) return
+    
+    const { error } = await supabase
+      .from('event_vehicle_assignments')
+      .update({ status: 'rejected' })
+      .eq('evenement_id', eventId)
+      .eq('vehicle_id', vehicleId)
+      .eq('profile_id', profileId)
+
     if (error) {
       setDetailsError(formatSupabaseError(error))
       return
@@ -2915,15 +3039,15 @@ function EventsPage({
                         <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
                           <button
                             type="button"
-                            className="primary-button"
+                            className={`presence-btn ${myPresence?.statut === 'present' ? 'present-active' : ''}`}
                             onClick={() => void setPresence(event, 'present')}
                             disabled={event.type === 'match' && !isConvoked}
                           >
-                            Present
+                            Présent
                           </button>
                           <button
                             type="button"
-                            className="link-button"
+                            className={`presence-btn ${myPresence?.statut === 'absent' ? 'absent-active' : ''}`}
                             onClick={() => void setPresence(event, 'absent')}
                             disabled={event.type === 'match' && !isConvoked}
                           >
@@ -2987,7 +3111,7 @@ function EventsPage({
                             <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
                               <button
                                 type="button"
-                                className="primary-button"
+                                className={`presence-btn ${childPresence?.statut === 'present' ? 'present-active' : ''}`}
                                 onClick={() => void setPresence(event, 'present', child.id)}
                                 disabled={event.type === 'match' && !childIsConvoked}
                               >
@@ -2995,7 +3119,7 @@ function EventsPage({
                               </button>
                               <button
                                 type="button"
-                                className="link-button"
+                                className={`presence-btn ${childPresence?.statut === 'absent' ? 'absent-active' : ''}`}
                                 onClick={() => void setPresence(event, 'absent', child.id)}
                                 disabled={event.type === 'match' && !childIsConvoked}
                               >
@@ -3003,26 +3127,69 @@ function EventsPage({
                               </button>
                               
                               {event.type === 'match' && !isDomicile && (
-                                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
-                                  <button
-                                    type="button"
-                                    className="link-button"
-                                    onClick={() => void setVehicleOffer(event, child.id)}
-                                    disabled={!childIsConvoked}
-                                  >
-                                    Vehicule
-                                  </button>
-                                  <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                                    <small className="muted">Places</small>
-                                    <input
-                                      style={{ width: '6rem' }}
-                                      inputMode="numeric"
-                                      value={vehicleSeatsDraft[draftKey] ?? (childVehicle ? String(childVehicle.seats_total) : '')}
-                                      onChange={(e) => setVehicleSeatsDraft((c) => ({ ...c, [draftKey]: e.target.value }))}
-                                      placeholder="0"
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginTop: '0.5rem', padding: '0.75rem', background: 'rgba(0,0,0,0.15)', borderRadius: '6px' }}>
+                                  <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                                    <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                      <small className="muted">Places</small>
+                                      <input
+                                        style={{ width: '6rem' }}
+                                        inputMode="numeric"
+                                        value={vehicleSeatsDraft[draftKey] ?? (childVehicle ? String(childVehicle.seats_total) : '')}
+                                        onChange={(e) => setVehicleSeatsDraft((c) => ({ ...c, [draftKey]: e.target.value }))}
+                                        placeholder="0"
+                                        disabled={!childIsConvoked}
+                                      />
+                                    </label>
+                                    
+                                    <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                      <small className="muted">Conducteur</small>
+                                      <select
+                                        value={vehicleDriverGenderDraft[draftKey] ?? (childVehicle?.driver_gender ?? '')}
+                                        onChange={(e) => setVehicleDriverGenderDraft((c) => ({ ...c, [draftKey]: e.target.value as any }))}
+                                        disabled={!childIsConvoked}
+                                      >
+                                        <option value="">Sélectionner</option>
+                                        <option value="pere">Père</option>
+                                        <option value="mere">Mère</option>
+                                        <option value="autre">Autre</option>
+                                      </select>
+                                    </label>
+
+                                    <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                      <small className="muted">Préférences</small>
+                                      <select
+                                        value={vehiclePassengerPrefDraft[draftKey] ?? (childVehicle?.passenger_preference ?? 'all')}
+                                        onChange={(e) => setVehiclePassengerPrefDraft((c) => ({ ...c, [draftKey]: e.target.value as any }))}
+                                        disabled={!childIsConvoked}
+                                      >
+                                        <option value="all">Tous passagers</option>
+                                        <option value="women_and_children">Femmes/Enfants uniq.</option>
+                                        <option value="men_and_children">Hommes/Enfants uniq.</option>
+                                      </select>
+                                    </label>
+                                  </div>
+
+                                  <div style={{ display: 'flex', gap: '1rem', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'space-between' }}>
+                                    <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem' }}>
+                                      <input 
+                                        type="checkbox"
+                                        checked={vehicleHasChildDraft[draftKey] ?? (childVehicle?.has_child_present ?? true)}
+                                        onChange={(e) => setVehicleHasChildDraft((c) => ({ ...c, [draftKey]: e.target.checked }))}
+                                        disabled={!childIsConvoked}
+                                      />
+                                      Mon enfant ({child.nom}) sera dans le véhicule
+                                    </label>
+
+                                    <button
+                                      type="button"
+                                      className="primary-button"
+                                      onClick={() => void setVehicleOffer(event, child.id)}
                                       disabled={!childIsConvoked}
-                                    />
-                                  </label>
+                                      style={{ padding: '0.4rem 0.8rem', fontSize: '0.85rem' }}
+                                    >
+                                      {childVehicle ? 'Mettre à jour véhicule' : 'Proposer véhicule'}
+                                    </button>
+                                  </div>
                                 </div>
                               )}
                             </div>
@@ -3078,26 +3245,54 @@ function EventsPage({
                   </p>}
 
                   {vehicles.length > 0 && (
-                    <div style={{ display: 'grid', gap: '0.5rem' }}>
+                    <div style={{ display: 'grid', gap: '0.75rem' }}>
                       {vehicles.map((v) => {
-                        const assigned = assignments.filter((a) => a.vehicle_id === v.id)
-                        const used = assigned.length
+                        const allAssigned = assignments.filter((a) => a.vehicle_id === v.id)
+                        const approved = allAssigned.filter((a) => a.status === 'approved' || !a.status)
+                        const pending = allAssigned.filter((a) => a.status === 'pending')
+                        const used = approved.length
                         const left = Math.max(0, (v.seats_total ?? 0) - used)
                         const title = v.owner_profile_id
                           ? `Vehicule: ${v.profiles?.nom ?? 'Joueur'}`
                           : `Vehicule: ${v.label ?? 'Independant'}`
+                        
+                        const isOwner = v.owner_profile_id === userId || (role === 'parent' && parentChildren.some(c => c.id === v.owner_profile_id))
+
+                        let driverLabel = ''
+                        if (v.driver_gender === 'pere') driverLabel = '👨 Conduit par : Père'
+                        if (v.driver_gender === 'mere') driverLabel = '👩 Conduit par : Mère'
+                        if (v.driver_gender === 'autre') driverLabel = '🚘 Conduit par : Autre'
+                        
+                        const prefLabel = v.passenger_preference === 'women_and_children' ? '⚠️ Femmes et enfants uniq.'
+                                        : v.passenger_preference === 'men_and_children' ? '⚠️ Hommes et enfants uniq.' : ''
+                        
+                        const hasChild = v.has_child_present ? '(Enfant présent)' : ''
+
+                        // Can the current user request a seat?
+                        // Only if they have a valid profile (userId or childId) and are not already in this vehicle or another vehicle for this event.
+                        const activeProfileId = role === 'parent' ? activeChildId : userId
+                        const isAlreadyAssigned = assignments.some(a => a.profile_id === activeProfileId)
+                        const canRequestSeat = activeProfileId && !isAlreadyAssigned && left > 0 && !isOwner
 
                         return (
-                          <div key={v.id} style={{ display: 'grid', gap: '0.25rem', padding: '0.6rem 0.7rem', borderRadius: '0.9rem', border: '1px solid rgba(0, 243, 255, 0.18)' }}>
+                          <div key={v.id} style={{ display: 'grid', gap: '0.5rem', padding: '0.75rem', borderRadius: '0.9rem', border: '1px solid rgba(0, 243, 255, 0.18)', background: 'rgba(0,0,0,0.2)' }}>
                             <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: '0.75rem', flexWrap: 'wrap' }}>
-                              <strong>{title}</strong>
-                              <span className="muted">{used}/{v.seats_total} utilises • {left} libres</span>
+                              <strong style={{ fontSize: '1.05rem', color: '#00f3ff' }}>{title}</strong>
+                              <span className="muted" style={{ fontWeight: 600 }}>{used}/{v.seats_total} utilises • {left} libres</span>
                             </div>
 
-                            {assigned.length > 0 ? (
-                              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35rem' }}>
-                                {assigned.map((a) => (
-                                  <span key={a.profile_id} className="chip" style={{ display: 'inline-flex', gap: '0.35rem', alignItems: 'center' }}>
+                            {(driverLabel || prefLabel) && (
+                              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', fontSize: '0.85rem' }}>
+                                {driverLabel && <span style={{ background: 'rgba(255,255,255,0.1)', padding: '0.2rem 0.5rem', borderRadius: '4px' }}>{driverLabel} {hasChild}</span>}
+                                {prefLabel && <span style={{ background: 'rgba(255,255,255,0.1)', padding: '0.2rem 0.5rem', borderRadius: '4px', color: '#ffb74d' }}>{prefLabel}</span>}
+                              </div>
+                            )}
+
+                            {/* Approved passengers */}
+                            {approved.length > 0 ? (
+                              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35rem', marginTop: '0.25rem' }}>
+                                {approved.map((a) => (
+                                  <span key={a.profile_id} className="chip" style={{ display: 'inline-flex', gap: '0.35rem', alignItems: 'center', background: 'rgba(0, 243, 255, 0.15)' }}>
                                     {a.profiles?.nom ?? 'Joueur'}
                                     {canManageEvents && (
                                       <button
@@ -3113,9 +3308,74 @@ function EventsPage({
                                 ))}
                               </div>
                             ) : (
-                              <p className="muted" style={{ margin: 0 }}>
-                                Aucune assignation.
+                              <p className="muted" style={{ margin: 0, fontSize: '0.85rem' }}>
+                                Aucun passager validé.
                               </p>
+                            )}
+
+                            {/* Pending requests */}
+                            {pending.length > 0 && (
+                              <div style={{ marginTop: '0.5rem', padding: '0.5rem', background: 'rgba(255, 183, 77, 0.1)', borderRadius: '6px' }}>
+                                <strong style={{ fontSize: '0.85rem', color: '#ffb74d', display: 'block', marginBottom: '0.4rem' }}>En attente de validation :</strong>
+                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+                                  {pending.map((a) => (
+                                    <span key={a.profile_id} className="chip" style={{ display: 'inline-flex', gap: '0.35rem', alignItems: 'center', borderColor: '#ffb74d' }}>
+                                      ⏳ {a.profiles?.nom ?? 'Joueur'}
+                                      
+                                      {/* Owner or Admin can approve/reject */}
+                                      {(isOwner || canManageEvents) && (
+                                        <>
+                                          <button
+                                            type="button"
+                                            className="link-button"
+                                            onClick={() => void approveVehicleAssignment(event.id, v.id, a.profile_id)}
+                                            style={{ padding: '0 0.2rem', color: '#4caf50', fontWeight: 'bold' }}
+                                            title="Accepter"
+                                          >
+                                            ✓
+                                          </button>
+                                          <button
+                                            type="button"
+                                            className="link-button"
+                                            onClick={() => void rejectVehicleAssignment(event.id, v.id, a.profile_id)}
+                                            style={{ padding: '0 0.2rem', color: '#f44336', fontWeight: 'bold' }}
+                                            title="Refuser"
+                                          >
+                                            ✗
+                                          </button>
+                                        </>
+                                      )}
+                                      
+                                      {/* User can cancel their own request */}
+                                      {!isOwner && !canManageEvents && a.profile_id === activeProfileId && (
+                                        <button
+                                          type="button"
+                                          className="link-button"
+                                          onClick={() => void unassignPlayer(event.id, a.profile_id)}
+                                          style={{ padding: '0 0.2rem' }}
+                                          title="Annuler ma demande"
+                                        >
+                                          Annuler
+                                        </button>
+                                      )}
+                                    </span>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Request Seat Button */}
+                            {canRequestSeat && (
+                              <div style={{ marginTop: '0.25rem' }}>
+                                <button
+                                  type="button"
+                                  className="primary-button"
+                                  style={{ padding: '0.35rem 0.6rem', fontSize: '0.8rem', background: 'transparent', border: '1px solid #00f3ff', color: '#00f3ff' }}
+                                  onClick={() => void requestVehicleSeat(event.id, v.id, activeProfileId)}
+                                >
+                                  Demander une place
+                                </button>
+                              </div>
                             )}
                           </div>
                         )
@@ -5778,10 +6038,10 @@ function AppShell() {
     if (userRole === 'admin') return true
     if (userRole === 'coach') return true
     if (userRole === 'parent') {
-      return path === '/dashboard' || path === '/events' || path === '/chat' || path === '/tests' || path === '/settings'
+      return path === '/dashboard' || path === '/events' || path === '/chat' || path === '/tests' || path === '/strategy' || path === '/settings'
     }
     // joueur
-    return path === '/dashboard' || path === '/events' || path === '/chat' || path === '/tests' || path === '/team' || path === '/settings'
+    return path === '/dashboard' || path === '/events' || path === '/chat' || path === '/tests' || path === '/team' || path === '/strategy' || path === '/settings'
   }
 
   useEffect(() => {
