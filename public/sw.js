@@ -1,4 +1,4 @@
-const CACHE_NAME = 'sifc-pwa-v1'
+const CACHE_NAME = 'sifc-pwa-v2'
 const APP_SHELL = ['/', '/index.html', '/manifest.webmanifest']
 
 self.addEventListener('install', (event) => {
@@ -21,20 +21,20 @@ self.addEventListener('fetch', (event) => {
     return
   }
 
-
+  // STRATÉGIE NETWORK-FIRST (Réseau en priorité, Cache en secours)
   event.respondWith(
-    caches.match(event.request).then((cached) => {
-      if (cached) {
-        return cached
-      }
-
-      return fetch(event.request)
-        .then((response) => {
-          const responseClone = response.clone()
-          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, responseClone))
-          return response
+    fetch(event.request)
+      .then((response) => {
+        // Si le réseau fonctionne, on met à jour le cache silencieusement
+        const responseClone = response.clone()
+        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, responseClone))
+        return response
+      })
+      .catch(() => {
+        // Si le réseau échoue (hors ligne), on cherche dans le cache
+        return caches.match(event.request).then((cached) => {
+          return cached || caches.match('/index.html')
         })
-        .catch(() => caches.match('/index.html'))
-    }),
+      })
   )
 })
