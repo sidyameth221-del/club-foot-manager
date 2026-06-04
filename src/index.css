@@ -1349,13 +1349,19 @@ input:checked + .premium-slider:before {
   }
 
   .app-shell {
-    width: calc(100% - 0.8rem);
-    margin: 0.4rem auto;
-    padding: 0.65rem 0.65rem 5.5rem;
+    width: 100%;
+    margin: 0;
+    padding: 0.65rem 0.65rem 8.5rem;
   }
 
   .bottom-nav {
     grid-template-columns: repeat(3, 1fr);
+    width: 100%;
+    bottom: 0;
+    border-radius: 1.5rem 1.5rem 0 0;
+    border-left: none;
+    border-right: none;
+    padding-bottom: calc(0.5rem + env(safe-area-inset-bottom));
   }
 
   .invite-grid {
