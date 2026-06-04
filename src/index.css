@@ -1367,6 +1367,31 @@ input:checked + .premium-slider:before {
   .invite-grid {
     grid-template-columns: 1fr;
   }
+
+  .strategy-layout-wrapper.is-fullscreen {
+    flex-direction: column !important;
+    overflow-y: auto !important;
+    padding: 1rem !important;
+    padding-bottom: calc(3rem + env(safe-area-inset-bottom)) !important;
+  }
+  
+  .strategy-layout-wrapper.is-fullscreen .tactical-board {
+    min-height: 45vh !important;
+    width: 100% !important;
+    flex: none !important;
+  }
+
+  .strategy-layout-wrapper.is-fullscreen .strategy-controls-panel {
+    width: 100% !important;
+    max-height: none !important;
+    overflow: visible !important;
+    display: flex !important;
+    flex-direction: column !important;
+    flex: none !important;
+    padding: 0 !important;
+    background: transparent !important;
+    border: none !important;
+  }
 }
 
 /* --- Global Team Selector (Admin) --- */

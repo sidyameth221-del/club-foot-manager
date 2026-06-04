@@ -4563,71 +4563,71 @@ function TestsPage({
                       </p>
                     </div>
                   </div>
+                </div>
 
-                  {canManage && (
-                    <div style={{ display: 'flex', justifyContent: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
-                      <label
+                {canManage && (
+                  <div style={{ display: 'flex', justifyContent: 'center', gap: '0.5rem', flexWrap: 'wrap', marginTop: '1rem' }}>
+                    <label
+                      className="skill-tab"
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '0.5rem',
+                        cursor: 'pointer',
+                        padding: '0.5rem 1rem',
+                        fontSize: '0.85rem',
+                        background: 'rgba(0, 243, 255, 0.1)',
+                        border: '1px solid rgba(0, 243, 255, 0.2)',
+                        borderRadius: '8px',
+                        color: 'var(--neon-cyan)',
+                        fontWeight: 600,
+                        margin: 0
+                      }}
+                    >
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                        <polyline points="17 8 12 3 7 8" />
+                        <line x1="12" y1="3" x2="12" y2="15" />
+                      </svg>
+                      {uploadingImage ? 'Chargement...' : (customImageExists ? "Changer l'image" : 'Ajouter une image')}
+                      <input
+                        type="file"
+                        accept="image/*"
+                        onChange={(e) => void handleUploadImage(e)}
+                        disabled={uploadingImage}
+                        style={{ display: 'none' }}
+                      />
+                    </label>
+
+                    {customImageExists && (
+                      <button
+                        type="button"
                         className="skill-tab"
+                        onClick={() => void handleDeleteImage()}
+                        disabled={uploadingImage}
                         style={{
                           display: 'inline-flex',
                           alignItems: 'center',
                           gap: '0.5rem',
-                          cursor: 'pointer',
                           padding: '0.5rem 1rem',
                           fontSize: '0.85rem',
-                          background: 'rgba(0, 243, 255, 0.1)',
-                          border: '1px solid rgba(0, 243, 255, 0.2)',
+                          background: 'rgba(255, 0, 85, 0.12)',
+                          border: '1px solid #ff0055',
                           borderRadius: '8px',
-                          color: 'var(--neon-cyan)',
+                          color: '#ff3366',
                           fontWeight: 600,
                           margin: 0
                         }}
                       >
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                          <polyline points="17 8 12 3 7 8" />
-                          <line x1="12" y1="3" x2="12" y2="15" />
+                          <path d="M3 6h18" />
+                          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
                         </svg>
-                        {uploadingImage ? 'Chargement...' : (customImageExists ? "Changer l'image" : 'Ajouter une image')}
-                        <input
-                          type="file"
-                          accept="image/*"
-                          onChange={(e) => void handleUploadImage(e)}
-                          disabled={uploadingImage}
-                          style={{ display: 'none' }}
-                        />
-                      </label>
-
-                      {customImageExists && (
-                        <button
-                          type="button"
-                          className="skill-tab"
-                          onClick={() => void handleDeleteImage()}
-                          disabled={uploadingImage}
-                          style={{
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            gap: '0.5rem',
-                            padding: '0.5rem 1rem',
-                            fontSize: '0.85rem',
-                            background: 'rgba(255, 0, 85, 0.12)',
-                            border: '1px solid #ff0055',
-                            borderRadius: '8px',
-                            color: '#ff3366',
-                            fontWeight: 600,
-                            margin: 0
-                          }}
-                        >
-                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                            <path d="M3 6h18" />
-                            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-                          </svg>
-                          Supprimer
-                        </button>
-                      )}
-                    </div>
-                  )}
-                </div>
+                        Supprimer
+                      </button>
+                    )}
+                  </div>
+                )}
               </article>
             </div>
           )}
