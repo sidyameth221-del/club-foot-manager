@@ -1351,7 +1351,7 @@ input:checked + .premium-slider:before {
   .app-shell {
     width: 100%;
     margin: 0;
-    padding: 0.65rem 0.65rem 8.5rem;
+    padding: 0.65rem 0.65rem 11rem;
   }
 
   .bottom-nav {
