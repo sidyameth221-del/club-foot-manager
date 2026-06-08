@@ -1521,6 +1521,24 @@ function TeamPage({
                           <option key={t.id} value={t.id}>{t.categorie} - {t.nom}</option>
                         ))}
                       </select>
+                      <button
+                        type="button"
+                        className="text-button"
+                        style={{ color: '#ef4444', fontSize: '0.8rem', padding: '0.2rem 0.5rem' }}
+                        onClick={async () => {
+                          if (!supabase) return;
+                          if (!confirm(`Voulez-vous vraiment supprimer définitivement le profil de ${p.nom} ? Cette action est irréversible.`)) return;
+                          try {
+                            const { error } = await supabase.from('profiles').delete().eq('id', p.id);
+                            if (error) throw error;
+                            setPlayers(prev => prev.filter(x => x.id !== p.id));
+                          } catch (err) {
+                            alert('Erreur: ' + (err as Error).message);
+                          }
+                        }}
+                      >
+                        Supprimer
+                      </button>
                     </div>
                   ) : (
                     <span className="chip" style={{ fontSize: '0.75rem', background: 'rgba(0, 243, 255, 0.1)' }}>
@@ -5676,8 +5694,8 @@ function SettingsPage({
       return
     }
 
-    if (profileRole !== 'admin') {
-      setChatError('Acces reserve aux admins')
+    if (profileRole !== 'admin' && profileRole !== 'coach') {
+      setChatError('Acces reserve aux admins et coachs')
       return
     }
 
@@ -6054,8 +6072,7 @@ function SettingsPage({
                   )}
                 </div>
                 <div>
-                  <p>{`${club.nom} (${club.slug})`}</p>
-                  <p className="muted">{club.logo_path ? `Logo: ${club.logo_path}` : 'Logo: non defini'}</p>
+                  <p>{club.nom}</p>
                 </div>
               </div>
             ) : (
@@ -6179,7 +6196,7 @@ function SettingsPage({
           <article className="panel setting-card">
             <h3>Chat</h3>
 
-            {profileRole === 'admin' && (
+            {(profileRole === 'admin' || profileRole === 'coach') && (
               <>
                 <p className="muted">Option: réserver le chat aux coachs/admins.</p>
                 <label className="toggle-row" style={{ marginBottom: '1.25rem' }}>
@@ -6477,7 +6494,7 @@ function ManagementPage() {
                       club.slug.slice(0, 4).toUpperCase()
                     )}
                   </div>
-                  <h3>{club.nom} <span className="muted" style={{ fontSize: '0.8rem' }}>({club.slug})</span></h3>
+                  <h3>{club.nom}</h3>
                 </div>
                 <button 
                   className="text-button" 
