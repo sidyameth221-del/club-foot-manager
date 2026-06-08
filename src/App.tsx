@@ -60,7 +60,9 @@ type EvenementRow = {
 type PresenceRow = {
   evenement_id: string
   profile_id: string
-  statut: 'present' | 'absent' | 'retard'
+  statut: 'present' | 'absent' | 'retard' | 'blesse' | 'malade'
+  justificatif_texte?: string | null
+  justificatif_url?: string | null
   created_at: string
   profiles?: { nom?: string } | null
 }
@@ -521,7 +523,7 @@ function LoginPage() {
       setLoading(true)
 
       if (mode === 'login') {
-        const { error: signInError } = await supabase.auth.signInWithPassword({
+        const { data: authData, error: signInError } = await supabase.auth.signInWithPassword({
           email,
           password,
         })
@@ -529,6 +531,41 @@ function LoginPage() {
           setError(signInError.message)
           return
         }
+
+        // Vérification du rôle sélectionné et de l'appartenance au club
+        if (authData?.user) {
+          const { data: profileData } = await supabase
+            .from('profiles')
+            .select('role, club_id')
+            .eq('id', authData.user.id)
+            .single()
+
+          if (profileData) {
+            // 1. Isolation stricte : Un compte ne peut se connecter que depuis le lien de son club
+            if (profileData.role !== 'super_admin' && publicClub && profileData.club_id !== publicClub.id) {
+              await supabase.auth.signOut()
+              setError(`Accès refusé : Ce compte n'appartient pas à ce club. Veuillez vous connecter depuis l'adresse de votre club.`)
+              return
+            }
+
+            // 2. Le Super Admin peut se connecter avec n'importe quel bouton (car son bouton est caché)
+            if (profileData.role !== 'super_admin' && profileData.role !== role) {
+              await supabase.auth.signOut()
+              const roleDisplayMap: Record<string, string> = {
+                joueur: 'Joueur',
+                coach: 'Coach',
+                parent: 'Parent',
+                admin: 'Admin',
+              }
+              const actualRole = roleDisplayMap[profileData.role] || profileData.role
+              const selectedRole = roleDisplayMap[role] || role
+              
+              setError(`Accès refusé : Ce compte est un profil "${actualRole}". Veuillez sélectionner le bon bouton (vous avez choisi "${selectedRole}").`)
+              return
+            }
+          }
+        }
+
         navigate('/dashboard')
         return
       }
@@ -610,30 +647,38 @@ function LoginPage() {
         </div>
       </header>
 
-      <div className="role-grid">
-        {roleCards.map((entry) => (
-          <button
-            key={entry.role}
-            type="button"
-            className={`role-card ${role === entry.role ? 'active' : ''}`}
-            onClick={() => {
-              setRole(entry.role)
-            }}
-            aria-disabled={mode === 'signup' && entry.role !== 'joueur'}
-            disabled={mode === 'signup' && entry.role !== 'joueur'}
-          >
-            <span className="role-icon" aria-hidden="true">
-              {entry.title.slice(0, 1)}
-            </span>
-            <strong>{entry.title}</strong>
-            <small>{entry.subtitle}</small>
-          </button>
-        ))}
-      </div>
+      {mode === 'login' && (
+        <>
+          <div className="role-grid">
+            {roleCards.map((entry) => (
+              <button
+                key={entry.role}
+                type="button"
+                className={`role-card ${role === entry.role ? 'active' : ''}`}
+                onClick={() => {
+                  setRole(entry.role)
+                }}
+              >
+                <span className="role-icon" aria-hidden="true">
+                  {entry.title.slice(0, 1)}
+                </span>
+                <strong>{entry.title}</strong>
+                <small>{entry.subtitle}</small>
+              </button>
+            ))}
+          </div>
 
-      <p className="login-hint">
-        Le role est attribue par le club (code d'invitation).
-      </p>
+          <p className="login-hint">
+            Sélectionnez votre profil (visuel uniquement). Le vrai rôle est attribué par le compte.
+          </p>
+        </>
+      )}
+
+      {mode === 'signup' && (
+        <p className="login-hint">
+          Votre rôle (Joueur, Coach, Admin...) sera défini automatiquement grâce à votre code d'invitation.
+        </p>
+      )}
 
       <form className="login-form panel" onSubmit={onSubmit}>
         <div className="form-top-row">
@@ -832,6 +877,9 @@ function DashboardPage({
   activeChildId,
   setActiveChildId,
   refreshParentChildren,
+  allClubTeams,
+  selectedEquipeId,
+  setSelectedEquipeId,
 }: {
   club: ClubRow | null
   role: Role | null
@@ -842,14 +890,18 @@ function DashboardPage({
   activeChildId: string
   setActiveChildId: (id: string) => void
   refreshParentChildren: (userId?: string, role?: string | null) => Promise<void>
+  allClubTeams?: EquipeRow[]
+  selectedEquipeId?: string | null
+  setSelectedEquipeId?: (id: string) => void
 }) {
   const categoryIcons: Record<string, string> = {
     Technique: '⚽',
     Mental: '🧠',
     Tactique: '🗺️',
     Physique: '💪',
+    'Perceptif et Cognitif': '👁️',
     Perceptif: '👁️',
-    Cognitif: '🔵',
+    Cognitif: '👁️',
   }
 
   const [stats, setStats] = useState({
@@ -948,6 +1000,43 @@ function DashboardPage({
         </div>
         {clubLogoUrl && <img src={clubLogoUrl} className="dash-club-logo" alt="Logo" />}
       </header>
+
+      {role === 'admin' && allClubTeams && allClubTeams.length > 0 && setSelectedEquipeId && (
+        <div className="child-selector-container panel" style={{ padding: '1.25rem', marginBottom: '1.5rem', background: 'linear-gradient(135deg, rgba(26,29,54,0.6) 0%, rgba(13,15,30,0.8) 100%)', border: '1px solid rgba(57, 232, 255, 0.15)', borderRadius: '16px' }}>
+          <h3 style={{ margin: '0 0 1rem 0', fontSize: '1.1rem', color: 'var(--text-color)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <span style={{ color: 'var(--primary-color)' }}>📋</span> Sélectionner l'équipe active :
+          </h3>
+          <div className="child-scroll-grid" style={{ display: 'flex', gap: '1rem', overflowX: 'auto', paddingBottom: '0.5rem', scrollbarWidth: 'thin' }}>
+            {allClubTeams.map((team) => {
+              const isActive = team.id === selectedEquipeId
+              return (
+                <button
+                  key={team.id}
+                  type="button"
+                  onClick={() => setSelectedEquipeId(team.id)}
+                  style={{
+                    flex: '0 0 auto',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'flex-start',
+                    padding: '0.8rem 1rem',
+                    background: isActive ? 'rgba(0, 243, 255, 0.15)' : 'rgba(255, 255, 255, 0.03)',
+                    border: isActive ? '1px solid rgba(0, 243, 255, 0.4)' : '1px solid rgba(255, 255, 255, 0.1)',
+                    borderRadius: '12px',
+                    cursor: 'pointer',
+                    transition: 'all 0.2s ease'
+                  }}
+                >
+                  <strong style={{ fontSize: '1rem', color: isActive ? '#00f3ff' : 'var(--text-color)', marginBottom: '0.25rem' }}>
+                    {team.categorie}
+                  </strong>
+                  <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{team.nom}</span>
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      )}
 
       {role === 'parent' && parentChildren.length > 0 && (
         <div className="child-selector-container panel" style={{ padding: '1.25rem', marginBottom: '1.5rem', background: 'linear-gradient(135deg, rgba(26,29,54,0.6) 0%, rgba(13,15,30,0.8) 100%)', border: '1px solid rgba(57, 232, 255, 0.15)', borderRadius: '16px' }}>
@@ -1225,7 +1314,7 @@ function DashboardPage({
                         <div className="lvl-track">
                           <span className="lvl-text">Niv. {l.current_level_rank}</span>
                           <div className="mini-bar">
-                            <div className="fill" style={{ width: `${(l.current_level_rank / 4) * 100}%` }} />
+                            <div className="fill" style={{ width: `${(l.current_level_rank / 5) * 100}%` }} />
                           </div>
                         </div>
                       </div>
@@ -1876,6 +1965,35 @@ function StrategyPage({
         </div>
       )}
 
+      {isFullscreen && (
+        <button
+          type="button"
+          onClick={() => setIsFullscreen(false)}
+          className="exit-fullscreen-btn"
+          style={{
+            position: 'fixed',
+            top: '20px',
+            right: '20px',
+            zIndex: 10000,
+            padding: '0.6rem 1.2rem',
+            fontSize: '0.85rem',
+            fontWeight: 700,
+            background: 'linear-gradient(110deg, #ff0055, #990022)',
+            border: '2px solid #ff3366',
+            boxShadow: '0 0 15px rgba(255, 0, 85, 0.6)',
+            color: '#fff',
+            borderRadius: '999px',
+            cursor: 'pointer',
+            fontFamily: 'var(--font-title)',
+            textTransform: 'uppercase',
+            letterSpacing: '0.05em',
+            transition: 'transform 0.2s, box-shadow 0.2s',
+          }}
+        >
+          ✕ Quitter Plein Écran
+        </button>
+      )}
+
       <div className={`tests-chat-grid strategy-layout-wrapper ${isFullscreen ? 'is-fullscreen' : ''}`} style={{ gridTemplateColumns: isFullscreen ? (canEdit ? '1.8fr 0.8fr' : '1fr') : (canEdit ? '1.55fr 1fr' : '1fr') }}>
         
         {/* Left Side: Pitch Viewport */}
@@ -2269,6 +2387,7 @@ function EventsPage({
   const [players, setPlayers] = useState<Array<{ id: string; nom: string }>>([])
 
   const [showAdd, setShowAdd] = useState(false)
+  const [editingEventId, setEditingEventId] = useState<string | null>(null)
   const [addType, setAddType] = useState<'entrainement' | 'match'>('entrainement')
   const [addLocationType, setAddLocationType] = useState<'domicile' | 'exterieur'>('exterieur')
   const [addWhen, setAddWhen] = useState(() => {
@@ -2314,10 +2433,14 @@ function EventsPage({
     let ignore = false
 
     void (async () => {
+      const today = new Date()
+      today.setHours(0, 0, 0, 0)
+
       let query = supabase
         .from('evenements')
         .select('id, club_id, equipe_id, type, date, lieu, infos')
         .eq('club_id', club.id)
+        .gte('date', today.toISOString())
         .order('date', { ascending: true })
         .limit(20)
 
@@ -2404,7 +2527,7 @@ function EventsPage({
         .in('evenement_id', eventIds),
       supabase
         .from('presences')
-        .select('evenement_id, profile_id, statut, created_at, profiles ( nom )')
+        .select('evenement_id, profile_id, statut, justificatif_texte, justificatif_url, created_at, profiles ( nom )')
         .in('evenement_id', eventIds),
       supabase
         .from('event_vehicles')
@@ -2475,10 +2598,14 @@ function EventsPage({
       return
     }
 
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+
     let query = supabase
       .from('evenements')
       .select('id, club_id, equipe_id, type, date, lieu, infos')
       .eq('club_id', club.id)
+      .gte('date', today.toISOString())
       .order('date', { ascending: true })
       .limit(20)
 
@@ -2571,36 +2698,50 @@ function EventsPage({
       .filter(([, checked]) => checked)
       .map(([id]) => id)
 
-    if (addType === 'match' && convokedIds.length === 0) {
+    if (addType === 'match' && convokedIds.length === 0 && !editingEventId) {
       setAddError('Pour un match, choisis au moins 1 joueur convoque')
       return
     }
 
     setAddBusy(true)
     try {
-      const { data: inserted, error: insertError } = await supabase
-        .from('evenements')
-        .insert({
-          club_id: club.id,
-          equipe_id: equipe.id,
-          type: addType,
-          date: when.toISOString(),
-          lieu,
-          infos: infos || null,
-        })
-        .select('id')
-        .single()
+      let eventId = editingEventId
+      if (editingEventId) {
+        const { error: updateError } = await supabase
+          .from('evenements')
+          .update({
+            type: addType,
+            date: when.toISOString(),
+            lieu,
+            infos: infos || null,
+          })
+          .eq('id', editingEventId)
+        if (updateError) throw updateError
+      } else {
+        const { data: inserted, error: insertError } = await supabase
+          .from('evenements')
+          .insert({
+            club_id: club.id,
+            equipe_id: equipe.id,
+            type: addType,
+            date: when.toISOString(),
+            lieu,
+            infos: infos || null,
+          })
+          .select('id')
+          .single()
 
-      if (insertError) {
-        throw insertError
+        if (insertError) {
+          throw insertError
+        }
+        eventId = (inserted as { id: string } | null)?.id
       }
 
-      const eventId = (inserted as { id: string } | null)?.id
       if (!eventId) {
         throw new Error('Evenement non cree (id manquant)')
       }
 
-      if (addType === 'match') {
+      if (addType === 'match' && !editingEventId) {
         const payload = convokedIds.map((profile_id) => ({ evenement_id: eventId, profile_id }))
         const { error: convocError } = await supabase.from('event_convocations').insert(payload)
         if (convocError) {
@@ -2608,8 +2749,9 @@ function EventsPage({
         }
       }
 
-      setAddInfo('Evenement ajoute')
+      setAddInfo(editingEventId ? 'Evenement modifie' : 'Evenement ajoute')
       setShowAdd(false)
+      setEditingEventId(null)
       setAddLieu('')
       setAddInfos('')
       setAddLocationType('exterieur')
@@ -2622,7 +2764,36 @@ function EventsPage({
     }
   }
 
-  const setPresence = async (event: EvenementRow, statut: 'present' | 'absent', childId?: string) => {
+  const openEditEvent = (ev: EvenementRow) => {
+    setEditingEventId(ev.id)
+    setAddType(ev.type)
+    const localDate = new Date(ev.date)
+    const pad = (value: number) => String(value).padStart(2, '0')
+    setAddWhen(`${localDate.getFullYear()}-${pad(localDate.getMonth() + 1)}-${pad(localDate.getDate())}T${pad(localDate.getHours())}:${pad(localDate.getMinutes())}`)
+    
+    if (ev.lieu.startsWith('[Domicile]')) {
+      setAddLocationType('domicile')
+      setAddLieu(ev.lieu.replace('[Domicile] ', ''))
+    } else if (ev.lieu.startsWith('[Extérieur]')) {
+      setAddLocationType('exterieur')
+      setAddLieu(ev.lieu.replace('[Extérieur] ', ''))
+    } else {
+      setAddLocationType('exterieur')
+      setAddLieu(ev.lieu)
+    }
+    
+    setAddInfos(ev.infos || '')
+    setShowAdd(true)
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+
+  const setPresence = async (
+    event: EvenementRow, 
+    statut: 'present' | 'absent' | 'retard' | 'blesse' | 'malade', 
+    childId?: string,
+    justificatif_texte?: string,
+    justificatif_url?: string
+  ) => {
     if (!supabase) return
     if (!userId) return
     if (role !== 'joueur' && role !== 'parent') return
@@ -2633,6 +2804,8 @@ function EventsPage({
       evenement_id: event.id,
       profile_id: targetProfileId,
       statut,
+      justificatif_texte: justificatif_texte || null,
+      justificatif_url: justificatif_url || null,
     }
 
     const { error } = await supabase.from('presences').upsert(payload)
@@ -2641,7 +2814,7 @@ function EventsPage({
       return
     }
 
-    if (statut === 'absent') {
+    if (statut !== 'present') {
       const { error: delVehicleError } = await supabase
         .from('event_vehicles')
         .delete()
@@ -2653,6 +2826,26 @@ function EventsPage({
     }
 
     await refreshEventDetails([event.id])
+  }
+
+  const handleUploadJustificatif = async (e: React.ChangeEvent<HTMLInputElement>, eventId: string, profileId: string) => {
+    if (!supabase) return null
+    const file = e.target.files?.[0]
+    if (!file) return null
+
+    const ext = file.name.split('.').pop()
+    const filename = `${eventId}_${profileId}_${Date.now()}.${ext}`
+    
+    // Upload file
+    const { error } = await supabase.storage.from('justificatifs').upload(filename, file)
+    if (error) {
+      console.error(error)
+      alert("Erreur d'upload du justificatif. Assurez-vous que le bucket public 'justificatifs' a bien été créé dans Supabase.")
+      return null
+    }
+
+    const { data: { publicUrl } } = supabase.storage.from('justificatifs').getPublicUrl(filename)
+    return publicUrl
   }
 
   const setVehicleOffer = async (event: EvenementRow, childId?: string) => {
@@ -2765,6 +2958,25 @@ function EventsPage({
     }
 
     setAssignPickPlayer((c) => ({ ...c, [eventId]: '' }))
+    await refreshEventDetails([eventId])
+  }
+
+  const handleConvokeAll = async (eventId: string) => {
+    if (!supabase || !canManageEvents || players.length === 0) return
+    
+    const currentConvokedIds = (convocationsByEvent[eventId] || []).map(c => c.profile_id)
+    const missingIds = players.map(p => p.id).filter(id => !currentConvokedIds.includes(id))
+    
+    if (missingIds.length === 0) return
+    
+    const payload = missingIds.map(profile_id => ({ evenement_id: eventId, profile_id }))
+    
+    const { error } = await supabase.from('event_convocations').insert(payload)
+    if (error) {
+      setDetailsError(formatSupabaseError(error))
+      return
+    }
+    
     await refreshEventDetails([eventId])
   }
 
@@ -3010,9 +3222,14 @@ function EventsPage({
                   <div className="event-summary__top">
                     <h3>{title}</h3>
                     {canManageEvents && (
-                      <button type="button" className="link-button" onClick={() => void deleteEvent(event)}>
-                        Supprimer
-                      </button>
+                      <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                        <button type="button" className="link-button" onClick={() => openEditEvent(event)} style={{ color: '#ffb74d' }}>
+                          ✏️ Modifier
+                        </button>
+                        <button type="button" className="link-button" onClick={() => void deleteEvent(event)} style={{ color: '#ef4444' }}>
+                          🗑️ Supprimer
+                        </button>
+                      </div>
                     )}
                   </div>
                   <p className="event-place" style={{ fontWeight: 500, color: 'inherit' }}>
@@ -3036,26 +3253,81 @@ function EventsPage({
                           Tu n'es pas convoque pour ce match.
                         </p>
                       ) : (
-                        <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
-                          <button
-                            type="button"
-                            className={`presence-btn ${myPresence?.statut === 'present' ? 'present-active' : ''}`}
-                            onClick={() => void setPresence(event, 'present')}
-                            disabled={event.type === 'match' && !isConvoked}
-                          >
-                            Présent
-                          </button>
-                          <button
-                            type="button"
-                            className={`presence-btn ${myPresence?.statut === 'absent' ? 'absent-active' : ''}`}
-                            onClick={() => void setPresence(event, 'absent')}
-                            disabled={event.type === 'match' && !isConvoked}
-                          >
-                            Absent
-                          </button>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                          <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                            <button
+                              type="button"
+                              className={`presence-btn ${myPresence?.statut === 'present' ? 'present-active' : ''}`}
+                              onClick={() => void setPresence(event, 'present')}
+                              disabled={event.type === 'match' && !isConvoked}
+                            >
+                              ✅ Présent
+                            </button>
+                            <button
+                              type="button"
+                              className={`presence-btn ${myPresence?.statut === 'absent' ? 'absent-active' : ''}`}
+                              onClick={() => {
+                                const motif = window.prompt("Motif de l'absence ?")
+                                if (motif !== null) void setPresence(event, 'absent', undefined, motif)
+                              }}
+                              disabled={event.type === 'match' && !isConvoked}
+                            >
+                              ❌ Absent
+                            </button>
+                            <button
+                              type="button"
+                              className={`presence-btn ${myPresence?.statut === 'retard' ? 'retard-active' : ''}`}
+                              onClick={() => {
+                                const motif = window.prompt("Motif du retard ?")
+                                if (motif !== null) void setPresence(event, 'retard', undefined, motif)
+                              }}
+                              disabled={event.type === 'match' && !isConvoked}
+                            >
+                              🕒 Retard
+                            </button>
+                            <button
+                              type="button"
+                              className={`presence-btn ${myPresence?.statut === 'blesse' ? 'blesse-active' : ''}`}
+                              onClick={() => {
+                                const motif = window.prompt("Détails de la blessure ?")
+                                if (motif !== null) void setPresence(event, 'blesse', undefined, motif)
+                              }}
+                              disabled={event.type === 'match' && !isConvoked}
+                            >
+                              🤕 Blessé
+                            </button>
+                            <button
+                              type="button"
+                              className={`presence-btn ${myPresence?.statut === 'malade' ? 'malade-active' : ''}`}
+                              onClick={() => {
+                                const motif = window.prompt("Détails de la maladie ?")
+                                if (motif !== null) void setPresence(event, 'malade', undefined, motif)
+                              }}
+                              disabled={event.type === 'match' && !isConvoked}
+                            >
+                              🤢 Malade
+                            </button>
+                          </div>
+                          
+                          {myPresence?.statut && myPresence.statut !== 'present' && (
+                            <div style={{ padding: '0.75rem', background: 'rgba(255, 255, 255, 0.05)', borderRadius: '6px', fontSize: '0.85rem' }}>
+                              <p style={{ margin: '0 0 0.5rem 0' }}><strong>Motif :</strong> {myPresence.justificatif_texte || 'Non renseigné'}</p>
+                              {myPresence.justificatif_url ? (
+                                <a href={myPresence.justificatif_url} target="_blank" rel="noreferrer" style={{ color: '#00f3ff' }}>Voir le justificatif</a>
+                              ) : (
+                                <label style={{ display: 'inline-block', cursor: 'pointer', color: '#ffb74d', textDecoration: 'underline' }}>
+                                  Joindre un justificatif
+                                  <input type="file" style={{ display: 'none' }} accept="image/*,.pdf" onChange={async (e) => {
+                                    const url = await handleUploadJustificatif(e, event.id, userId!)
+                                    if (url) void setPresence(event, myPresence.statut, undefined, myPresence.justificatif_texte || '', url)
+                                  }} />
+                                </label>
+                              )}
+                            </div>
+                          )}
 
-                          {event.type === 'match' && !isDomicile && (
-                            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                          {event.type === 'match' && !isDomicile && myPresence?.statut === 'present' && (
+                            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap', marginTop: '0.5rem' }}>
                               <button
                                 type="button"
                                 className="link-button"
@@ -3077,10 +3349,6 @@ function EventsPage({
                               </label>
                             </div>
                           )}
-
-                          <div className="muted" style={{ fontSize: '0.9rem' }}>
-                            Statut: <strong>{myPresence ? myPresence.statut : '—'}</strong>
-                          </div>
                         </div>
                       )}
                     </>
@@ -3108,23 +3376,78 @@ function EventsPage({
                                 Statut: <strong>{childPresence ? childPresence.statut : '—'}</strong>
                               </span>
                             </div>
-                            <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
-                              <button
-                                type="button"
-                                className={`presence-btn ${childPresence?.statut === 'present' ? 'present-active' : ''}`}
-                                onClick={() => void setPresence(event, 'present', child.id)}
-                                disabled={event.type === 'match' && !childIsConvoked}
-                              >
-                                Présent
-                              </button>
-                              <button
-                                type="button"
-                                className={`presence-btn ${childPresence?.statut === 'absent' ? 'absent-active' : ''}`}
-                                onClick={() => void setPresence(event, 'absent', child.id)}
-                                disabled={event.type === 'match' && !childIsConvoked}
-                              >
-                                Absent
-                              </button>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                              <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                                <button
+                                  type="button"
+                                  className={`presence-btn ${childPresence?.statut === 'present' ? 'present-active' : ''}`}
+                                  onClick={() => void setPresence(event, 'present', child.id)}
+                                  disabled={event.type === 'match' && !childIsConvoked}
+                                >
+                                  ✅ Présent
+                                </button>
+                                <button
+                                  type="button"
+                                  className={`presence-btn ${childPresence?.statut === 'absent' ? 'absent-active' : ''}`}
+                                  onClick={() => {
+                                    const motif = window.prompt("Motif de l'absence ?")
+                                    if (motif !== null) void setPresence(event, 'absent', child.id, motif)
+                                  }}
+                                  disabled={event.type === 'match' && !childIsConvoked}
+                                >
+                                  ❌ Absent
+                                </button>
+                                <button
+                                  type="button"
+                                  className={`presence-btn ${childPresence?.statut === 'retard' ? 'retard-active' : ''}`}
+                                  onClick={() => {
+                                    const motif = window.prompt("Motif du retard ?")
+                                    if (motif !== null) void setPresence(event, 'retard', child.id, motif)
+                                  }}
+                                  disabled={event.type === 'match' && !childIsConvoked}
+                                >
+                                  🕒 Retard
+                                </button>
+                                <button
+                                  type="button"
+                                  className={`presence-btn ${childPresence?.statut === 'blesse' ? 'blesse-active' : ''}`}
+                                  onClick={() => {
+                                    const motif = window.prompt("Détails de la blessure ?")
+                                    if (motif !== null) void setPresence(event, 'blesse', child.id, motif)
+                                  }}
+                                  disabled={event.type === 'match' && !childIsConvoked}
+                                >
+                                  🤕 Blessé
+                                </button>
+                                <button
+                                  type="button"
+                                  className={`presence-btn ${childPresence?.statut === 'malade' ? 'malade-active' : ''}`}
+                                  onClick={() => {
+                                    const motif = window.prompt("Détails de la maladie ?")
+                                    if (motif !== null) void setPresence(event, 'malade', child.id, motif)
+                                  }}
+                                  disabled={event.type === 'match' && !childIsConvoked}
+                                >
+                                  🤢 Malade
+                                </button>
+                              </div>
+                              
+                              {childPresence?.statut && childPresence.statut !== 'present' && (
+                                <div style={{ padding: '0.75rem', background: 'rgba(255, 255, 255, 0.05)', borderRadius: '6px', fontSize: '0.85rem' }}>
+                                  <p style={{ margin: '0 0 0.5rem 0' }}><strong>Motif :</strong> {childPresence.justificatif_texte || 'Non renseigné'}</p>
+                                  {childPresence.justificatif_url ? (
+                                    <a href={childPresence.justificatif_url} target="_blank" rel="noreferrer" style={{ color: '#00f3ff' }}>Voir le justificatif</a>
+                                  ) : (
+                                    <label style={{ display: 'inline-block', cursor: 'pointer', color: '#ffb74d', textDecoration: 'underline' }}>
+                                      Joindre un justificatif
+                                      <input type="file" style={{ display: 'none' }} accept="image/*,.pdf" onChange={async (e) => {
+                                        const url = await handleUploadJustificatif(e, event.id, child.id)
+                                        if (url) void setPresence(event, childPresence.statut, child.id, childPresence.justificatif_texte || '', url)
+                                      }} />
+                                    </label>
+                                  )}
+                                </div>
+                              )}
                               
                               {event.type === 'match' && !isDomicile && (
                                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginTop: '0.5rem', padding: '0.75rem', background: 'rgba(0,0,0,0.15)', borderRadius: '6px' }}>
@@ -3203,7 +3526,19 @@ function EventsPage({
 
               {event.type === 'match' && (
                 <div className="panel" style={{ padding: '0.75rem', display: 'grid', gap: '0.35rem' }}>
-                  <strong>Convoques</strong>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <strong>Convoques</strong>
+                    {canManageEvents && players.length > convocations.length && (
+                      <button 
+                        type="button" 
+                        className="text-button" 
+                        style={{ fontSize: '0.8rem', padding: '0.2rem 0.5rem', background: 'rgba(0, 243, 255, 0.1)', color: '#00f3ff', borderRadius: '4px', border: '1px solid rgba(0, 243, 255, 0.3)' }}
+                        onClick={() => void handleConvokeAll(event.id)}
+                      >
+                        + Convoquer tout le monde
+                      </button>
+                    )}
+                  </div>
                   {convocations.length === 0 ? (
                     <p className="muted" style={{ margin: 0 }}>
                       Aucun joueur convoque.
@@ -3450,10 +3785,28 @@ function EventsPage({
                 </div>
               )}
 
-              <div className="muted" style={{ fontSize: '0.9rem' }}>
-                Presence equipe: {presences.filter((p) => p.statut === 'present' || p.statut === 'retard').length} present(s),{' '}
-                {presences.filter((p) => p.statut === 'absent').length} absent(s)
-              </div>
+              {canManageEvents ? (
+                <div className="panel" style={{ marginTop: '0.5rem', padding: '0.75rem', background: 'rgba(0, 243, 255, 0.05)', border: '1px solid rgba(0, 243, 255, 0.2)' }}>
+                  <strong style={{ display: 'block', marginBottom: '0.5rem', color: '#00f3ff' }}>📊 Synthèse des présences</strong>
+                  <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', fontSize: '0.9rem', alignItems: 'center' }}>
+                    <div style={{ background: 'rgba(255,255,255,0.05)', padding: '0.25rem 0.5rem', borderRadius: '4px' }}>
+                      <strong>{presences.length}</strong> {event.type === 'match' ? `/ ${convocations.length}` : ''} Réponses
+                    </div>
+                    <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+                      <span title="Présents">✅ {presences.filter((p) => p.statut === 'present').length}</span>
+                      <span title="Absents">❌ {presences.filter((p) => p.statut === 'absent').length}</span>
+                      <span title="Retards">🕒 {presences.filter((p) => p.statut === 'retard').length}</span>
+                      <span title="Blessés">🤕 {presences.filter((p) => p.statut === 'blesse').length}</span>
+                      <span title="Malades">🤢 {presences.filter((p) => p.statut === 'malade').length}</span>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="muted" style={{ fontSize: '0.9rem' }}>
+                  Presence equipe: {presences.filter((p) => p.statut === 'present' || p.statut === 'retard').length} present(s),{' '}
+                  {presences.filter((p) => p.statut === 'absent').length} absent(s)
+                </div>
+              )}
             </article>
           )
         })}
@@ -3713,19 +4066,21 @@ function ChatPage({
               className={`message-bubble ${message.author_id === userId ? 'mine' : ''}`}
             >
               <strong>{message.author_name}</strong>
-              <p>{message.text}</p>
+              <p style={{ whiteSpace: 'pre-wrap', margin: '0.25rem 0' }}>{message.text}</p>
               <small>
                 {new Date(message.created_at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
               </small>
             </div>
           ))}
         </div>
-        <div className="chat-input-row">
-          <input
+        <div className="chat-input-row" style={{ alignItems: 'flex-end' }}>
+          <textarea
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
-            placeholder={chatRestrictedForPlayers ? 'Chat reserve coach/admin' : 'Votre message'}
+            placeholder={chatRestrictedForPlayers ? 'Chat reserve coach/admin' : 'Votre message...'}
             disabled={sendBusy || chatRestrictedForPlayers}
+            style={{ resize: 'none', padding: '0.75rem', fontFamily: 'inherit', flex: 1, minHeight: '44px' }}
+            rows={draft.split('\n').length > 1 ? Math.min(draft.split('\n').length, 5) : 1}
           />
           <button
             type="button"
@@ -3815,27 +4170,38 @@ function TestsPage({
     return selectedPlayerId || userId
   }, [canManage, role, selectedPlayerId, userId, activeChildId])
 
+  const mapDbCategoryToUi = (cat: string) => {
+    if (cat === 'Perceptif' || cat === 'Cognitif') return 'Perceptif et Cognitif'
+    return cat
+  }
+
+  const mapUiCategoryToDb = (cat: string) => {
+    if (cat === 'Perceptif et Cognitif') return 'Perceptif'
+    return cat
+  }
+
   const categoryIcons: Record<string, string> = {
     Technique: '⚽',
     Mental: '🧠',
     Tactique: '🗺️',
     Physique: '💪',
+    'Perceptif et Cognitif': '👁️',
     Perceptif: '👁️',
-    Cognitif: '🔵',
+    Cognitif: '👁️',
   }
 
-  const categories = useMemo(
-    () =>
-      Array.from(new Set(competencies.map((c) => c.category)))
-        .sort()
-        .filter((cat) => ['Technique', 'Mental', 'Tactique', 'Physique', 'Perceptif', 'Cognitif'].includes(cat)),
-    [competencies],
-  )
+  const categories = useMemo(() => {
+    const rawCats = competencies.map((c) => mapDbCategoryToUi(c.category))
+    const uniqueCats = Array.from(new Set(rawCats))
+    return uniqueCats
+      .sort()
+      .filter((cat) => ['Technique', 'Mental', 'Tactique', 'Physique', 'Perceptif et Cognitif'].includes(cat))
+  }, [competencies])
 
   const competenciesForCategory = useMemo(
     () =>
       competencies
-        .filter((c) => c.category?.toLowerCase() === activeCategoryId?.toLowerCase())
+        .filter((c) => mapDbCategoryToUi(c.category).toLowerCase() === activeCategoryId?.toLowerCase())
         .reduce(
           (acc, c) => {
             const key = c.competency_name
@@ -3857,7 +4223,7 @@ function TestsPage({
   )
 
   const activeLevelDetails = useMemo(
-    () => levelsForActiveSkill.find((lvl) => lvl.level_rank === activeLevel) ?? levelsForActiveSkill[0],
+    () => levelsForActiveSkill.find((lvl) => lvl.level_rank === activeLevel) ?? null,
     [activeLevel, levelsForActiveSkill],
   )
 
@@ -3867,8 +4233,12 @@ function TestsPage({
       setEditedDescriptionText(activeLevelDetails.level_description || '')
       setEditedLevelNameText(activeLevelDetails.level_name || '')
       setEditingDescription(false)
+    } else {
+      setEditedDescriptionText('')
+      setEditedLevelNameText(activeLevel === 1 ? 'Découverte' : activeLevel === 5 ? 'Expertise' : `Niveau ${activeLevel}`)
+      setEditingDescription(false)
     }
-  }, [activeLevelDetails])
+  }, [activeLevelDetails, activeLevel])
 
   // Load competency framework from database
   useEffect(() => {
@@ -3934,9 +4304,10 @@ function TestsPage({
         .eq('role', 'joueur')
         .order('nom', { ascending: true })
 
-      if (role === 'coach' && equipe?.id) {
+      if ((role === 'coach' || role === 'admin') && equipe?.id) {
         query = query.eq('equipe_id', equipe.id)
       } else if (role === 'admin' && club?.id) {
+        // Fallback si aucune équipe n'est sélectionnée (ne devrait pas arriver)
         query = query.eq('club_id', club.id)
       }
 
@@ -4023,39 +4394,163 @@ function TestsPage({
   }, [activeSkillName, competenciesForCategory])
 
   useEffect(() => {
-    if (levelsForActiveSkill.length > 0 && !levelsForActiveSkill.some((l) => l.level_rank === activeLevel)) {
+    if (!canManage && levelsForActiveSkill.length > 0 && !levelsForActiveSkill.some((l) => l.level_rank === activeLevel)) {
       setActiveLevel(levelsForActiveSkill[0].level_rank)
     }
-  }, [activeLevel, levelsForActiveSkill])
+  }, [activeLevel, levelsForActiveSkill, canManage])
 
   const handleUpdateDescription = async () => {
-    if (!supabase || !activeLevelDetails || !userId) return
+    if (!supabase || !club?.id || !userId) return
     if (!canManage) return
 
     setSaving(true)
 
     try {
-      const { error } = await supabase
-        .from('competency_framework')
-        .update({
+      if (activeLevelDetails) {
+        // Mettre à jour le niveau existant
+        const { error } = await supabase
+          .from('competency_framework')
+          .update({
+            level_name: editedLevelNameText,
+            level_description: editedDescriptionText
+          })
+          .eq('id', activeLevelDetails.id)
+
+        if (error) throw error
+
+        setCompetencies(prev => 
+          prev.map(c => 
+            c.id === activeLevelDetails.id 
+              ? { ...c, level_name: editedLevelNameText, level_description: editedDescriptionText } 
+              : c
+          )
+        )
+      } else {
+        // Insérer le niveau manquant
+        const newEntry = {
+          club_id: club.id,
+          category: mapUiCategoryToDb(activeCategoryId),
+          competency_name: activeSkillName,
+          level_rank: activeLevel,
           level_name: editedLevelNameText,
           level_description: editedDescriptionText
-        })
-        .eq('id', activeLevelDetails.id)
+        }
+        const { data, error } = await supabase
+          .from('competency_framework')
+          .insert(newEntry)
+          .select()
+          .single()
 
-      if (error) throw error
-
-      setCompetencies(prev => 
-        prev.map(c => 
-          c.id === activeLevelDetails.id 
-            ? { ...c, level_name: editedLevelNameText, level_description: editedDescriptionText } 
-            : c
-        )
-      )
+        if (error) throw error
+        if (data) {
+           setCompetencies(prev => [...prev, data as any])
+        }
+      }
       setEditingDescription(false)
     } catch (err) {
       console.error("Error updating competency description:", err)
       alert("Erreur lors de la modification : " + formatSupabaseError(err))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  // Fonctions CRUD dynamiques pour les sous-compétences
+  const handleAddSkill = async () => {
+    if (!supabase || !club?.id) return
+    const newSkill = window.prompt(`Entrez le nom de la nouvelle compétence pour la catégorie "${activeCategoryId}" :`)
+    if (!newSkill || newSkill.trim() === '') return
+
+    setSaving(true)
+    try {
+      const payload = [1, 2, 3, 4, 5].map(rank => ({
+        club_id: club.id,
+        category: mapUiCategoryToDb(activeCategoryId),
+        competency_name: newSkill.trim(),
+        level_rank: rank,
+        level_name: rank === 1 ? 'Découverte' : rank === 5 ? 'Expertise' : `Niveau ${rank}`,
+        level_description: ''
+      }))
+
+      const { error } = await supabase.from('competency_framework').insert(payload)
+      if (error) throw error
+
+      const { data } = await supabase
+        .from('competency_framework')
+        .select('id, category, competency_name, level_rank, level_name, level_description')
+        .eq('club_id', club.id)
+      if (data) setCompetencies(data as any)
+      setActiveSkillName(newSkill.trim())
+    } catch (err) {
+      alert("Erreur lors de l'ajout : " + formatSupabaseError(err))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleRenameSkill = async (oldName: string) => {
+    if (!supabase || !club?.id) return
+    const newName = window.prompt(`Entrez le nouveau nom pour "${oldName}" :`, oldName)
+    if (!newName || newName.trim() === '' || newName === oldName) return
+
+    setSaving(true)
+    try {
+      const ids = competencies
+        .filter(c => c.competency_name === oldName && mapDbCategoryToUi(c.category) === activeCategoryId)
+        .map(c => c.id)
+
+      if (ids.length === 0) return
+
+      for (const id of ids) {
+        const { error } = await supabase.from('competency_framework').update({ competency_name: newName.trim() }).eq('id', id)
+        if (error) throw error
+      }
+
+      const { data } = await supabase
+        .from('competency_framework')
+        .select('id, category, competency_name, level_rank, level_name, level_description')
+        .eq('club_id', club.id)
+      if (data) setCompetencies(data as any)
+      setActiveSkillName(newName.trim())
+    } catch (err) {
+      alert("Erreur lors de la modification : " + formatSupabaseError(err))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleDeleteSkill = async (skillName: string) => {
+    if (!supabase || !club?.id) return
+    const confirm = window.confirm(`Voulez-vous vraiment supprimer la compétence "${skillName}" et tous ses niveaux ? Cette action est irréversible.`)
+    if (!confirm) return
+
+    setSaving(true)
+    try {
+      const ids = competencies
+        .filter(c => c.competency_name === skillName && mapDbCategoryToUi(c.category) === activeCategoryId)
+        .map(c => c.id)
+      
+      if (ids.length > 0) {
+        const { error } = await supabase.from('competency_framework').delete().in('id', ids)
+        if (error) throw error
+      }
+
+      const { data } = await supabase
+        .from('competency_framework')
+        .select('id, category, competency_name, level_rank, level_name, level_description')
+        .eq('club_id', club.id)
+      if (data) setCompetencies(data as any)
+      
+      const remainingSkills = Object.keys(competenciesForCategory).filter(s => s !== skillName)
+      if (remainingSkills.length > 0) {
+        setActiveSkillName(remainingSkills[0])
+      }
+    } catch (err) {
+      if (err instanceof Error && err.message.includes('foreign key')) {
+        alert("Impossible de supprimer cette compétence : des joueurs ont déjà été évalués dessus.")
+      } else {
+        alert("Erreur lors de la suppression : " + formatSupabaseError(err))
+      }
     } finally {
       setSaving(false)
     }
@@ -4146,60 +4641,71 @@ function TestsPage({
         { cat: 'Technique', name: 'Conduite de balle', rank: 2, lname: 'En progression', desc: 'Garde le contrôle en mouvement avec peu de pertes.' },
         { cat: 'Technique', name: 'Conduite de balle', rank: 3, lname: 'Maîtrise', desc: 'Alterne rythmes et directions avec ballon proche du pied.' },
         { cat: 'Technique', name: 'Conduite de balle', rank: 4, lname: 'Référence', desc: 'Conduit vite, protège et élimine sous pression réelle.' },
+        { cat: 'Technique', name: 'Conduite de balle', rank: 5, lname: 'Expertise', desc: 'Maitrise totale a tres haute vitesse, elimine l\'adversaire dans les petits espaces sous pression intense.' },
         { cat: 'Technique', name: 'Passe sous pression', rank: 1, lname: 'Découverte', desc: 'Passe réussie sans adversaire proche.' },
         { cat: 'Technique', name: 'Passe sous pression', rank: 2, lname: 'En progression', desc: 'Trouve un partenaire avec opposition modérée.' },
         { cat: 'Technique', name: 'Passe sous pression', rank: 3, lname: 'Maîtrise', desc: 'Choisit la bonne passe dans un espace réduit.' },
         { cat: 'Technique', name: 'Passe sous pression', rank: 4, lname: 'Référence', desc: 'Enchaîne passe juste et rapide sous pressing intense.' },
+        { cat: 'Technique', name: 'Passe sous pression', rank: 5, lname: 'Expertise', desc: 'Passe precise de premiere intention trouvant les intervalles les plus difficiles dans le bloc adverse.' },
         // MENTAL
         { cat: 'Mental', name: 'Concentration', rank: 1, lname: 'Découverte', desc: 'Perd vite le fil de la consigne en séance.' },
         { cat: 'Mental', name: 'Concentration', rank: 2, lname: 'En progression', desc: 'Reste concentré sur des séquences courtes.' },
         { cat: 'Mental', name: 'Concentration', rank: 3, lname: 'Maîtrise', desc: 'Maintient son attention même après une erreur.' },
         { cat: 'Mental', name: 'Concentration', rank: 4, lname: 'Référence', desc: 'Concentration stable du début à la fin.' },
+        { cat: 'Mental', name: 'Concentration', rank: 5, lname: 'Expertise', desc: 'Focus total ininterrompu, reste lucide et decisif dans les zones de verite meme en fin de match.' },
         { cat: 'Mental', name: 'Gestion émotionnelle', rank: 1, lname: 'Découverte', desc: 'Réagit fortement à la frustration.' },
         { cat: 'Mental', name: 'Gestion émotionnelle', rank: 2, lname: 'En progression', desc: 'Retrouve son calme avec accompagnement.' },
         { cat: 'Mental', name: 'Gestion émotionnelle', rank: 3, lname: 'Maîtrise', desc: 'Contrôle ses réactions dans les temps faibles.' },
         { cat: 'Mental', name: 'Gestion émotionnelle', rank: 4, lname: 'Référence', desc: 'Reste lucide et positif dans les moments critiques.' },
+        { cat: 'Mental', name: 'Gestion émotionnelle', rank: 5, lname: 'Expertise', desc: 'Garde son sang-froid absolu dans toutes les situations, leader et regulateur du collectif.' },
         // TACTIQUE
         { cat: 'Tactique', name: 'Placement défensif', rank: 1, lname: 'Découverte', desc: 'Repère tardivement sa zone et son rôle.' },
         { cat: 'Tactique', name: 'Placement défensif', rank: 2, lname: 'En progression', desc: 'Occupe globalement la bonne zone.' },
         { cat: 'Tactique', name: 'Placement défensif', rank: 3, lname: 'Maîtrise', desc: 'Ajuste son placement selon ballon et partenaires.' },
         { cat: 'Tactique', name: 'Placement défensif', rank: 4, lname: 'Référence', desc: 'Anticipe et ferme les espaces avant le danger.' },
+        { cat: 'Tactique', name: 'Placement défensif', rank: 5, lname: 'Expertise', desc: 'Anticipation exceptionnelle, lit le jeu de l\'adversaire pour couper les trajectoires et fermer les espaces.' },
         { cat: 'Tactique', name: 'Lecture des transitions', rank: 1, lname: 'Découverte', desc: 'Réagit tard aux pertes et récupérations.' },
         { cat: 'Tactique', name: 'Lecture des transitions', rank: 2, lname: 'En progression', desc: 'Déclenche un replacement simple.' },
         { cat: 'Tactique', name: 'Lecture des transitions', rank: 3, lname: 'Maîtrise', desc: 'Fait le bon choix en transition offensive/défensive.' },
         { cat: 'Tactique', name: 'Lecture des transitions', rank: 4, lname: 'Référence', desc: 'Influence positivement la transition de toute l équipe.' },
+        { cat: 'Tactique', name: 'Lecture des transitions', rank: 5, lname: 'Expertise', desc: 'Ajuste son comportement immediatement a la perte/recuperation et lance l\'action de transition avec precision.' },
         // PHYSIQUE
         { cat: 'Physique', name: 'VMA / capacité aérobie', rank: 1, lname: 'Découverte', desc: 'Difficulté à tenir les blocs d effort.' },
         { cat: 'Physique', name: 'VMA / capacité aérobie', rank: 2, lname: 'En progression', desc: 'Tient l intensité sur des séquences limitées.' },
         { cat: 'Physique', name: 'VMA / capacité aérobie', rank: 3, lname: 'Maîtrise', desc: 'Répète les courses avec récupération correcte.' },
         { cat: 'Physique', name: 'VMA / capacité aérobie', rank: 4, lname: 'Référence', desc: 'Maintient haute intensité sur toute la séance.' },
+        { cat: 'Physique', name: 'VMA / capacité aérobie', rank: 5, lname: 'Expertise', desc: 'VMA superieure permettant de repeter les efforts de haute intensite sur l\'integralite du match.' },
         { cat: 'Physique', name: 'Sprint 20m', rank: 1, lname: 'Découverte', desc: 'Départ et accélération encore lents.' },
         { cat: 'Physique', name: 'Sprint 20m', rank: 2, lname: 'En progression', desc: 'Accélération correcte sur les premiers mètres.' },
         { cat: 'Physique', name: 'Sprint 20m', rank: 3, lname: 'Maîtrise', desc: 'Bonne fréquence et vitesse terminale stable.' },
         { cat: 'Physique', name: 'Sprint 20m', rank: 4, lname: 'Référence', desc: 'Sprint explosif et reproductible en série.' },
-        // PERCEPTIF
-        { cat: 'Perceptif', name: 'Vision périphérique', rank: 1, lname: 'Découverte', desc: 'Observe surtout le ballon, peu l environnement.' },
-        { cat: 'Perceptif', name: 'Vision périphérique', rank: 2, lname: 'En progression', desc: 'Identifie quelques options autour de lui.' },
-        { cat: 'Perceptif', name: 'Vision périphérique', rank: 3, lname: 'Maîtrise', desc: 'Scanne fréquemment avant de recevoir.' },
-        { cat: 'Perceptif', name: 'Vision périphérique', rank: 4, lname: 'Référence', desc: 'Utilise infos périphériques pour devancer le jeu.' },
-        { cat: 'Perceptif', name: 'Orientation du corps', rank: 1, lname: 'Découverte', desc: 'Orientation fermée, options de jeu limitées.' },
-        { cat: 'Perceptif', name: 'Orientation du corps', rank: 2, lname: 'En progression', desc: 'Ouvre son corps dans des situations simples.' },
-        { cat: 'Perceptif', name: 'Orientation du corps', rank: 3, lname: 'Maîtrise', desc: 'Oriente son contrôle selon la pression.' },
-        { cat: 'Perceptif', name: 'Orientation du corps', rank: 4, lname: 'Référence', desc: 'Orientation optimale et constante avant réception.' },
-        // COGNITIF
-        { cat: 'Cognitif', name: 'Vitesse de décision', rank: 1, lname: 'Découverte', desc: 'Hésite souvent avant de choisir.' },
-        { cat: 'Cognitif', name: 'Vitesse de décision', rank: 2, lname: 'En progression', desc: 'Prend des décisions simples avec délai réduit.' },
-        { cat: 'Cognitif', name: 'Vitesse de décision', rank: 3, lname: 'Maîtrise', desc: 'Choisit vite et juste dans des contextes variables.' },
-        { cat: 'Cognitif', name: 'Vitesse de décision', rank: 4, lname: 'Référence', desc: 'Décision immédiate et pertinente sous forte pression.' },
-        { cat: 'Cognitif', name: 'Mémoire tactique', rank: 1, lname: 'Découverte', desc: 'Retient partiellement les principes collectifs.' },
-        { cat: 'Cognitif', name: 'Mémoire tactique', rank: 2, lname: 'En progression', desc: 'Applique les consignes récurrentes.' },
-        { cat: 'Cognitif', name: 'Mémoire tactique', rank: 3, lname: 'Maîtrise', desc: 'Transfère les schémas vus à l entrainement.' },
-        { cat: 'Cognitif', name: 'Mémoire tactique', rank: 4, lname: 'Référence', desc: 'Mobilise automatiquement les repères tactiques.' }
+        { cat: 'Physique', name: 'Sprint 20m', rank: 5, lname: 'Expertise', desc: 'Vitesse explosive exceptionnelle avec temps de reaction ultra-rapide au depart.' },
+        // PERCEPTIF ET COGNITIF
+        { cat: 'Perceptif et Cognitif', name: 'Vision périphérique', rank: 1, lname: 'Découverte', desc: 'Observe surtout le ballon, peu l environnement.' },
+        { cat: 'Perceptif et Cognitif', name: 'Vision périphérique', rank: 2, lname: 'En progression', desc: 'Identifie quelques options autour de lui.' },
+        { cat: 'Perceptif et Cognitif', name: 'Vision périphérique', rank: 3, lname: 'Maîtrise', desc: 'Scanne fréquemment avant de recevoir.' },
+        { cat: 'Perceptif et Cognitif', name: 'Vision périphérique', rank: 4, lname: 'Référence', desc: 'Utilise infos périphériques pour devancer le jeu.' },
+        { cat: 'Perceptif et Cognitif', name: 'Vision périphérique', rank: 5, lname: 'Expertise', desc: 'Scanne l\'environnement de maniere permanente et prend des informations avant meme la reception du ballon.' },
+        { cat: 'Perceptif et Cognitif', name: 'Orientation du corps', rank: 1, lname: 'Découverte', desc: 'Orientation fermée, options de jeu limitées.' },
+        { cat: 'Perceptif et Cognitif', name: 'Orientation du corps', rank: 2, lname: 'En progression', desc: 'Ouvre son corps dans des situations simples.' },
+        { cat: 'Perceptif et Cognitif', name: 'Orientation du corps', rank: 3, lname: 'Maîtrise', desc: 'Oriente son contrôle selon la pression.' },
+        { cat: 'Perceptif et Cognitif', name: 'Orientation du corps', rank: 4, lname: 'Référence', desc: 'Orientation optimale et constante avant réception.' },
+        { cat: 'Perceptif et Cognitif', name: 'Orientation du corps', rank: 5, lname: 'Expertise', desc: 'Oriente son corps de maniere optimale pour enchainer le jeu vers l\'avant le plus rapidement possible.' },
+        { cat: 'Perceptif et Cognitif', name: 'Vitesse de décision', rank: 1, lname: 'Découverte', desc: 'Hésite souvent avant de choisir.' },
+        { cat: 'Perceptif et Cognitif', name: 'Vitesse de décision', rank: 2, lname: 'En progression', desc: 'Prend des décisions simples avec délai réduit.' },
+        { cat: 'Perceptif et Cognitif', name: 'Vitesse de décision', rank: 3, lname: 'Maîtrise', desc: 'Choisit vite et juste dans des contextes variables.' },
+        { cat: 'Perceptif et Cognitif', name: 'Vitesse de décision', rank: 4, lname: 'Référence', desc: 'Décision immédiate et pertinente sous forte pression.' },
+        { cat: 'Perceptif et Cognitif', name: 'Vitesse de décision', rank: 5, lname: 'Expertise', desc: 'Choix de jeu parfait et execution immediate dans toutes les situations de jeu rapides.' },
+        { cat: 'Perceptif et Cognitif', name: 'Mémoire tactique', rank: 1, lname: 'Découverte', desc: 'Retient partiellement les principes collectifs.' },
+        { cat: 'Perceptif et Cognitif', name: 'Mémoire tactique', rank: 2, lname: 'En progression', desc: 'Applique les consignes récurrentes.' },
+        { cat: 'Perceptif et Cognitif', name: 'Mémoire tactique', rank: 3, lname: 'Maîtrise', desc: 'Transfère les schémas vus à l entrainement.' },
+        { cat: 'Perceptif et Cognitif', name: 'Mémoire tactique', rank: 4, lname: 'Référence', desc: 'Mobilise automatiquement les repères tactiques.' },
+        { cat: 'Perceptif et Cognitif', name: 'Mémoire tactique', rank: 5, lname: 'Expertise', desc: 'Assimile et adapte instantanement les consignes collectives et animations tactiques complexes.' }
       ]
 
       const payload = defaults.map(d => ({
         club_id: club.id,
-        category: d.cat,
+        category: mapUiCategoryToDb(d.cat),
         competency_name: d.name,
         level_rank: d.rank,
         level_name: d.lname,
@@ -4229,7 +4735,8 @@ function TestsPage({
   // Synchroniser mediaSrc avec l'illustration personnalisée en priorité
   useEffect(() => {
     if (!club?.id) return
-    const safeCat = slugify(activeCategoryId)
+    const dbCat = mapUiCategoryToDb(activeCategoryId)
+    const safeCat = slugify(dbCat)
     const safeSkill = slugify(activeSkillName)
     const customPath = `tests/${club.id}/${safeCat}/${safeSkill}/level-${activeLevel}.jpg`
     const customUrl = supabase ? supabase.storage.from('club-logos').getPublicUrl(customPath).data.publicUrl : ''
@@ -4243,7 +4750,8 @@ function TestsPage({
 
     setUploadingImage(true)
     try {
-      const safeCat = slugify(activeCategoryId)
+      const dbCat = mapUiCategoryToDb(activeCategoryId)
+      const safeCat = slugify(dbCat)
       const safeSkill = slugify(activeSkillName)
       const customPath = `tests/${club.id}/${safeCat}/${safeSkill}/level-${activeLevel}.jpg`
 
@@ -4271,7 +4779,8 @@ function TestsPage({
 
     setUploadingImage(true)
     try {
-      const safeCat = slugify(activeCategoryId)
+      const dbCat = mapUiCategoryToDb(activeCategoryId)
+      const safeCat = slugify(dbCat)
       const safeSkill = slugify(activeSkillName)
       const customPath = `tests/${club.id}/${safeCat}/${safeSkill}/level-${activeLevel}.jpg`
 
@@ -4294,7 +4803,8 @@ function TestsPage({
 
   // Media path logic
   const getMediaPath = (cat: string, skill: string, lvl: number) => {
-    const safeCat = slugify(cat)
+    const dbCat = mapUiCategoryToDb(cat)
+    const safeCat = slugify(dbCat)
     const safeSkill = slugify(skill)
     return `/media/tests/${safeCat}/${safeSkill}/level-${lvl}.jpg`
   }
@@ -4367,23 +4877,60 @@ function TestsPage({
           ) : (
             <div className="tests-chat-grid">
               <aside>
-                <h3 className="eyebrow">Compétences</h3>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <h3 className="eyebrow" style={{ margin: 0 }}>Compétences</h3>
+                  {canManage && (
+                    <button 
+                      type="button" 
+                      className="text-button" 
+                      style={{ fontSize: '0.8rem', padding: '0.25rem 0.5rem' }} 
+                      onClick={handleAddSkill}
+                      title="Ajouter une compétence"
+                    >
+                      + Ajouter
+                    </button>
+                  )}
+                </div>
                 <div className="skill-list" style={{ marginTop: '0.75rem' }}>
                   {skills.map((skill) => {
                     const currentLvl = playerLevels[skill] || null
                     return (
-                      <button
-                        key={skill}
-                        type="button"
-                        className={`skill-item ${skill === activeSkillName ? 'active' : ''}`}
-                        onClick={() => {
-                          setActiveSkillName(skill)
-                          setActiveLevel(1)
-                        }}
-                      >
-                        <span>{skill}</span>
-                        {currentLvl && <span className="level-badge">Lvl {currentLvl}</span>}
-                      </button>
+                      <div key={skill} style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                        <button
+                          type="button"
+                          className={`skill-item ${skill === activeSkillName ? 'active' : ''}`}
+                          style={{ flex: 1 }}
+                          onClick={() => {
+                            setActiveSkillName(skill)
+                            setActiveLevel(1)
+                          }}
+                        >
+                          <span>{skill}</span>
+                          {currentLvl && <span className="level-badge">Lvl {currentLvl}</span>}
+                        </button>
+                        {canManage && skill === activeSkillName && (
+                          <div style={{ display: 'flex', gap: '0.25rem' }}>
+                            <button 
+                              type="button" 
+                              className="text-button" 
+                              style={{ padding: '0.25rem' }} 
+                              title="Renommer" 
+                              onClick={() => handleRenameSkill(skill)}
+                            >
+                              ✏️
+                            </button>
+                            <button 
+                              type="button" 
+                              className="text-button" 
+                              style={{ padding: '0.25rem', color: '#ff3366' }} 
+                              title="Supprimer" 
+                              onClick={() => handleDeleteSkill(skill)}
+                            >
+                              🗑️
+                            </button>
+                          </div>
+                        )}
+                      </div>
                     )
                   })}
                 </div>
@@ -4392,11 +4939,11 @@ function TestsPage({
               <article className="panel" style={{ padding: '1.2rem' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
                   <h3 style={{ color: 'var(--neon-green)' }}>{activeSkillName}</h3>
-                  <span className="muted">Niveaux 1-4</span>
+                  <span className="muted">Niveaux 1-5</span>
                 </div>
 
                 <div className="level-grid">
-                  {[1, 2, 3, 4].map((l) => {
+                  {[1, 2, 3, 4, 5].map((l) => {
                     const isValidated = (playerLevels[activeSkillName] || 0) >= l
                     return (
                       <button
@@ -4520,7 +5067,22 @@ function TestsPage({
                 </div>
 
                 <div className="media-container" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-                  <div style={{ position: 'relative', width: '100%', minHeight: '150px' }}>
+                  <div
+                    className="test-media-wrapper"
+                    style={{
+                      position: 'relative',
+                      width: '100%',
+                      minHeight: '150px',
+                      cursor: canManage ? 'pointer' : 'default',
+                      borderRadius: '0.75rem',
+                      overflow: 'hidden'
+                    }}
+                    onClick={() => {
+                      if (canManage && !uploadingImage) {
+                        document.getElementById('test-image-upload-input')?.click()
+                      }
+                    }}
+                  >
                     <img
                       key={`${activeCategoryId}-${activeSkillName}-${activeLevel}-${imageTimestamp}`}
                       src={mediaSrc || getMediaPath(activeCategoryId, activeSkillName, activeLevel)}
@@ -4551,7 +5113,7 @@ function TestsPage({
                         }
                       }}
                     />
-                    <div className="media-placeholder" style={{ display: 'flex', width: '100%' }}>
+                    <div className="media-placeholder" style={{ display: 'flex', width: '100%', minHeight: '150px' }}>
                       <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--muted)" strokeWidth="1.5">
                         <rect x="3" y="3" width="18" height="18" rx="2" />
                         <circle cx="8.5" cy="8.5" r="1.5" />
@@ -4559,9 +5121,20 @@ function TestsPage({
                       </svg>
                       <p style={{ marginTop: '1rem' }}>Illustration du test</p>
                       <p className="muted" style={{ fontSize: '0.8rem' }}>
-                        Image manquante. Utilisez le bouton ci-dessous pour l'ajouter.
+                        Image manquante. Cliquez ici pour l'ajouter.
                       </p>
                     </div>
+
+                    {canManage && (
+                      <div className="test-media-overlay">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                          <polyline points="17 8 12 3 7 8" />
+                          <line x1="12" y1="3" x2="12" y2="15" />
+                        </svg>
+                        <span>{customImageExists ? "Changer l'image" : 'Ajouter une image'}</span>
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -4591,6 +5164,7 @@ function TestsPage({
                       </svg>
                       {uploadingImage ? 'Chargement...' : (customImageExists ? "Changer l'image" : 'Ajouter une image')}
                       <input
+                        id="test-image-upload-input"
                         type="file"
                         accept="image/*"
                         onChange={(e) => void handleUploadImage(e)}
@@ -5782,8 +6356,221 @@ function BottomNav({ role }: { role: Role | null }) {
       {!isSuperAdmin && <NavLink to="/events">Evenements</NavLink>}
       {!isSuperAdmin && <NavLink to="/chat">Chat</NavLink>}
       {!isSuperAdmin && <NavLink to="/tests">Tests</NavLink>}
+      {isSuperAdmin && <NavLink to="/management">Gestion</NavLink>}
       <NavLink to="/settings">Parametres</NavLink>
     </nav>
+  )
+}
+
+function ManagementPage() {
+  const [clubs, setClubs] = useState<any[]>([])
+  const [equipes, setEquipes] = useState<any[]>([])
+  const [loading, setLoading] = useState(true)
+
+  // États pour la suppression sécurisée
+  const [deleteTarget, setDeleteTarget] = useState<any | null>(null)
+  const [deleteNameConfirm, setDeleteNameConfirm] = useState('')
+  const [deletePassword, setDeletePassword] = useState('')
+  const [deleteError, setDeleteError] = useState<string | null>(null)
+  const [deleteBusy, setDeleteBusy] = useState(false)
+
+  useEffect(() => {
+    let ignore = false
+    async function load() {
+      if (!supabase) return
+      setLoading(true)
+      const [{ data: cData }, { data: eData }] = await Promise.all([
+        supabase.from('clubs').select('*').order('created_at', { ascending: false }),
+        supabase.from('equipes').select('*').order('categorie')
+      ])
+      if (!ignore) {
+        setClubs(cData || [])
+        setEquipes(eData || [])
+        setLoading(false)
+      }
+    }
+    void load()
+    return () => { ignore = true }
+  }, [])
+
+  const getLogoUrl = (path: string | null) => {
+    if (!supabase || !path) return null
+    return supabase.storage.from('club-logos').getPublicUrl(path).data.publicUrl
+  }
+
+  const handleDeleteClub = async () => {
+    if (!supabase || !deleteTarget) return
+    setDeleteError(null)
+
+    if (deleteNameConfirm !== deleteTarget.nom) {
+      setDeleteError("Le nom du club ne correspond pas exactement.")
+      return
+    }
+
+    if (!deletePassword) {
+      setDeleteError("Veuillez entrer votre mot de passe pour confirmer l'action.")
+      return
+    }
+
+    setDeleteBusy(true)
+    try {
+      // 1. Récupérer l'email du Super Admin actuel
+      const { data: sessionData } = await supabase.auth.getSession()
+      const email = sessionData?.session?.user?.email
+      if (!email) throw new Error("Impossible de vérifier votre identité (email introuvable)")
+      
+      // 2. Vérifier le mot de passe via une tentative de connexion
+      const { error: authError } = await supabase.auth.signInWithPassword({
+        email,
+        password: deletePassword
+      })
+      if (authError) throw new Error("Mot de passe incorrect. Suppression annulée.")
+
+      // 3. Exécuter la suppression (avec retour pour certifier)
+      const { data: deletedRows, error: delError } = await supabase
+        .from('clubs')
+        .delete()
+        .eq('id', deleteTarget.id)
+        .select()
+
+      if (delError) throw delError
+      if (!deletedRows || deletedRows.length === 0) {
+        throw new Error("Le club n'a pas pu être supprimé de la base de données (blocage de sécurité).")
+      }
+
+      // 4. Mettre à jour l'interface
+      setClubs(prev => prev.filter(c => c.id !== deleteTarget.id))
+      setDeleteTarget(null)
+      setDeleteNameConfirm('')
+      setDeletePassword('')
+      alert(`Le club "${deleteTarget.nom}" a bien été supprimé totalement !`)
+    } catch (err: any) {
+      setDeleteError(formatSupabaseError(err))
+    } finally {
+      setDeleteBusy(false)
+    }
+  }
+
+  return (
+    <section className="page dashboard-page">
+      <header className="dashboard-header">
+        <div className="welcome-text">
+          <h1>Gestion Globale</h1>
+          <p className="muted">Vue d'ensemble de la plateforme</p>
+        </div>
+      </header>
+      <div className="settings-grid">
+        {loading ? (
+          <p>Chargement...</p>
+        ) : clubs.map(club => {
+          const clubTeams = equipes.filter(e => e.club_id === club.id)
+          const logoUrl = getLogoUrl(club.logo_path)
+          
+          return (
+            <article key={club.id} className="panel setting-card" style={{ position: 'relative' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                  <div className={`club-mark ${logoUrl ? 'club-logo' : 'club-text'}`} style={{ width: '40px', height: '40px', fontSize: '0.8rem' }}>
+                    {logoUrl ? (
+                      <img src={logoUrl} alt={`Logo ${club.nom}`} />
+                    ) : (
+                      club.slug.slice(0, 4).toUpperCase()
+                    )}
+                  </div>
+                  <h3>{club.nom} <span className="muted" style={{ fontSize: '0.8rem' }}>({club.slug})</span></h3>
+                </div>
+                <button 
+                  className="text-button" 
+                  style={{ color: '#ef4444', fontSize: '0.85rem' }}
+                  onClick={() => setDeleteTarget(club)}
+                >
+                  Supprimer le club
+                </button>
+              </div>
+              
+              {clubTeams.length === 0 ? (
+                <p className="muted">Aucune équipe créée</p>
+              ) : (
+                <ul style={{ paddingLeft: '1.25rem', margin: 0, display: 'grid', gap: '0.4rem' }}>
+                  {clubTeams.map(t => (
+                    <li key={t.id}>{t.categorie} - {t.nom}</li>
+                  ))}
+                </ul>
+              )}
+            </article>
+          )
+        })}
+      </div>
+
+      {deleteTarget && (
+        <div className="modal-overlay" style={{ zIndex: 1000 }}>
+          <div className="modal-content panel" style={{ maxWidth: '450px', background: 'var(--panel-bg)', borderColor: '#ef4444' }}>
+            <h3 style={{ color: '#ef4444', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              ⚠️ Zone de Danger
+            </h3>
+            <p>
+              Vous êtes sur le point de supprimer définitivement le club <strong>{deleteTarget.nom}</strong>. 
+              Cette action supprimera toutes ses équipes et désactivera ses utilisateurs.
+            </p>
+            
+            <label style={{ display: 'block', marginTop: '1.5rem', marginBottom: '0.5rem' }}>
+              Tapez le nom exact du club pour confirmer :
+              <input 
+                type="text" 
+                placeholder={deleteTarget.nom} 
+                value={deleteNameConfirm}
+                onChange={e => {
+                  setDeleteNameConfirm(e.target.value)
+                  setDeleteError(null)
+                }}
+                disabled={deleteBusy}
+                style={{ width: '100%', marginTop: '0.25rem' }}
+              />
+            </label>
+
+            <label style={{ display: 'block', marginBottom: '1rem' }}>
+              Entrez votre mot de passe (Super Admin) :
+              <input 
+                type="password" 
+                placeholder="Votre mot de passe" 
+                value={deletePassword}
+                onChange={e => {
+                  setDeletePassword(e.target.value)
+                  setDeleteError(null)
+                }}
+                disabled={deleteBusy}
+                style={{ width: '100%', marginTop: '0.25rem' }}
+              />
+            </label>
+
+            {deleteError && <p className="form-feedback error" style={{ margin: '1rem 0' }}>{deleteError}</p>}
+
+            <div className="modal-actions" style={{ marginTop: '1.5rem', display: 'flex', justifyContent: 'flex-end', gap: '1rem' }}>
+              <button 
+                className="secondary-button" 
+                onClick={() => {
+                  setDeleteTarget(null)
+                  setDeleteNameConfirm('')
+                  setDeletePassword('')
+                  setDeleteError(null)
+                }}
+                disabled={deleteBusy}
+              >
+                Annuler
+              </button>
+              <button 
+                className="primary-button" 
+                style={{ background: '#ef4444', borderColor: '#ef4444' }}
+                onClick={handleDeleteClub}
+                disabled={deleteBusy}
+              >
+                {deleteBusy ? 'Suppression en cours...' : 'Confirmer la suppression'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </section>
   )
 }
 
@@ -6097,7 +6884,7 @@ function AppShell() {
       if (needsClubSetup) {
         navigate('/club-setup')
       } else if (role === 'super_admin') {
-        navigate('/dashboard')
+        navigate('/management')
       } else {
         navigate('/events')
       }
@@ -6132,22 +6919,6 @@ function AppShell() {
       <div className="ambient-lights" aria-hidden="true" />
 
       {/* Header global avec sélecteur d'équipe pour l'admin */}
-      {!hideBottomNav && (role === 'admin' || role === 'super_admin') && allClubTeams.length > 0 && (
-        <header className="global-team-selector">
-          <div className="selector-content">
-            <span className="muted">Équipe active :</span>
-            <select
-              value={selectedEquipeId ?? ''}
-              onChange={(e) => setSelectedEquipeId(e.target.value)}
-              className="team-select"
-            >
-              {allClubTeams.map(t => (
-                <option key={t.id} value={t.id}>{t.categorie} - {t.nom}</option>
-              ))}
-            </select>
-          </div>
-        </header>
-      )}
 
       <Routes>
         <Route path="/" element={<LoginPage />} />
@@ -6156,7 +6927,8 @@ function AppShell() {
           path="/club-setup"
           element={userId ? <ClubSetupPage userId={userId} role={role} needsClubSetup={needsClubSetup} /> : <LoginPage />}
         />
-        <Route path="/dashboard" element={<DashboardPage club={club} role={role} equipe={equipe} userId={userId} authorName={authorName} parentChildren={parentChildren} activeChildId={activeChildId} setActiveChildId={setActiveChildId} refreshParentChildren={refreshParentChildren} />} />
+        <Route path="/management" element={<ManagementPage />} />
+        <Route path="/dashboard" element={<DashboardPage club={club} role={role} equipe={equipe} userId={userId} authorName={authorName} parentChildren={parentChildren} activeChildId={activeChildId} setActiveChildId={setActiveChildId} refreshParentChildren={refreshParentChildren} allClubTeams={allClubTeams} selectedEquipeId={selectedEquipeId} setSelectedEquipeId={setSelectedEquipeId} />} />
         <Route path="/team" element={<TeamPage club={club} equipe={equipe} role={role} />} />
         <Route path="/strategy" element={<StrategyPage club={club} equipe={equipe} role={role} parentChildren={parentChildren} activeChildId={activeChildId} />} />
         <Route path="/events" element={<EventsPage equipe={equipe} userId={userId} club={club} role={role} parentChildren={parentChildren} activeChildId={activeChildId} />} />
