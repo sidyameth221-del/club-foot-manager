@@ -667,10 +667,6 @@ function LoginPage() {
               </button>
             ))}
           </div>
-
-          <p className="login-hint">
-            Sélectionnez votre profil (visuel uniquement). Le vrai rôle est attribué par le compte.
-          </p>
         </>
       )}
 
