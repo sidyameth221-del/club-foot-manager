@@ -5109,7 +5109,7 @@ function TestsPage({
                         if (p) p.style.display = 'none'
 
                         // Set customImageExists if the loaded URL is our Supabase Storage URL
-                        if (e.currentTarget.src.includes('supabase.co')) {
+                        if (e.currentTarget.src.includes('supabase.co') || e.currentTarget.src.includes('club-logos')) {
                           setCustomImageExists(true)
                         } else {
                           setCustomImageExists(false)
