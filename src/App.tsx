@@ -1358,6 +1358,104 @@ function DashboardPage({
   )
 }
 
+function HexagonRadar({
+  levels, // Array of 6 values between 0 and 5
+  labels, // Array of 6 strings
+  onPerformancesChange,
+  canEdit
+}: {
+  levels: number[]
+  labels: string[]
+  onPerformancesChange?: (newVal: number) => void
+  canEdit: boolean
+}) {
+  const size = 300
+  const center = size / 2
+  const maxRadius = 100
+
+  // Calculate coordinates for a point
+  const getPoint = (value: number, index: number, maxVal = 5) => {
+    const angle = (Math.PI * 2 * index) / 6 - Math.PI / 2
+    const radius = (value / maxVal) * maxRadius
+    return {
+      x: center + radius * Math.cos(angle),
+      y: center + radius * Math.sin(angle)
+    }
+  }
+
+  // Draw background grid (5 levels)
+  const gridPolygons = [1, 2, 3, 4, 5].map(level => {
+    const points = Array.from({ length: 6 }).map((_, i) => getPoint(level, i)).map(p => `${p.x},${p.y}`).join(' ')
+    return <polygon key={level} points={points} fill="none" stroke="rgba(255, 255, 255, 0.1)" strokeWidth="1" />
+  })
+
+  // Draw axes
+  const axes = Array.from({ length: 6 }).map((_, i) => {
+    const p = getPoint(5, i)
+    return <line key={i} x1={center} y1={center} x2={p.x} y2={p.y} stroke="rgba(255, 255, 255, 0.1)" strokeWidth="1" />
+  })
+
+  // Draw data polygon
+  const dataPoints = levels.map((val, i) => getPoint(val, i)).map(p => `${p.x},${p.y}`).join(' ')
+
+  return (
+    <div style={{ position: 'relative', width: size, height: size, margin: '0 auto' }}>
+      <svg width={size} height={size}>
+        {gridPolygons}
+        {axes}
+        <polygon points={dataPoints} fill="rgba(0, 243, 255, 0.3)" stroke="#00f3ff" strokeWidth="2" />
+        {levels.map((val, i) => {
+          const p = getPoint(val, i)
+          const isPerformances = i === 5
+          return (
+            <circle
+              key={i}
+              cx={p.x}
+              cy={p.y}
+              r={isPerformances && canEdit ? 6 : 4}
+              fill={isPerformances ? '#ff0055' : '#00f3ff'}
+              style={{ cursor: isPerformances && canEdit ? 'pointer' : 'default' }}
+              onClick={(e) => {
+                if (isPerformances && canEdit && onPerformancesChange) {
+                  // Extremely simplified manual adjustment: click the point to cycle values
+                  const rect = e.currentTarget.getBoundingClientRect()
+                  // Instead of complex drag math, just prompt or cycle 1-5
+                  const newVal = val >= 5 ? 1 : val + 1
+                  onPerformancesChange(newVal)
+                }
+              }}
+            />
+          )
+        })}
+      </svg>
+      {labels.map((label, i) => {
+        const p = getPoint(6, i) // Place labels slightly outside
+        return (
+           <div
+            key={i}
+            style={{
+              position: 'absolute',
+              left: p.x,
+              top: p.y,
+              transform: 'translate(-50%, -50%)',
+              color: i === 5 ? '#ff0055' : '#a0aec0',
+              fontSize: '0.7rem',
+              fontWeight: 'bold',
+              textShadow: '0 2px 4px rgba(0,0,0,0.8)',
+              pointerEvents: 'none',
+              textAlign: 'center',
+              width: '80px'
+            }}
+          >
+            {label}
+            {i === 5 && canEdit && <div style={{ fontSize: '0.6rem', color: '#fff', opacity: 0.7 }}>(Clic pour ajuster)</div>}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 function TeamPage({
   club,
   equipe,
@@ -1370,22 +1468,59 @@ function TeamPage({
   const [players, setPlayers] = useState<Array<{ id: string; nom: string }>>([])
   const [playersError, setPlayersError] = useState<string | null>(null)
   const [playersBusy, setPlayersBusy] = useState(false)
-  
   const [adminTeams, setAdminTeams] = useState<any[]>([])
+  
+  const [selectedPlayer, setSelectedPlayer] = useState<{ id: string; nom: string } | null>(null)
+  const [playerPerformances, setPlayerPerformances] = useState<Record<string, number>>(() => {
+    try {
+      const saved = localStorage.getItem('playerPerformances');
+      return saved ? JSON.parse(saved) : {};
+    } catch {
+      return {};
+    }
+  })
+  const [radarData, setRadarData] = useState<Record<string, number>>({})
 
   const equipeId = equipe?.id ?? null
+  const canManage = role === 'admin' || role === 'coach'
+
+  useEffect(() => {
+    if (!selectedPlayer || !supabase) return;
+    let ignore = false;
+    void (async () => {
+      const { data } = await supabase
+        .from('player_competency_levels')
+        .select('current_level_rank, competency_framework!inner(category)')
+        .eq('profile_id', selectedPlayer.id);
+
+      if (ignore || !data) return;
+      
+      const aggregates: Record<string, number[]> = {};
+      data.forEach((row: any) => {
+        const cat = row.competency_framework?.category;
+        if (cat) {
+          if (!aggregates[cat]) aggregates[cat] = [];
+          aggregates[cat].push(row.current_level_rank);
+        }
+      });
+      
+      const newRadar: Record<string, number> = {};
+      for (const [cat, ranks] of Object.entries(aggregates)) {
+         // Calcul de la moyenne arrondie au plus proche
+         const sum = ranks.reduce((a, b) => a + b, 0);
+         newRadar[cat] = Math.round(sum / ranks.length);
+      }
+      setRadarData(newRadar);
+    })();
+    return () => { ignore = true; };
+  }, [selectedPlayer]);
 
   const refreshPlayers = async () => {
     setPlayersError(null)
-    if (!supabase) {
+    if (!supabase || !equipeId) {
       setPlayers([])
       return
     }
-    if (!equipeId) {
-      setPlayers([])
-      return
-    }
-
     setPlayersBusy(true)
     try {
       const { data, error } = await supabase
@@ -1408,7 +1543,6 @@ function TeamPage({
 
   useEffect(() => {
     void refreshPlayers()
-    
     if (role === 'admin' && club?.id) {
       supabase?.from('equipes')
         .select('*')
@@ -1417,29 +1551,6 @@ function TeamPage({
         .then(({ data }) => setAdminTeams(data || []))
     }
   }, [equipeId, role, club?.id])
-
-  useEffect(() => {
-    if (!supabase) return
-    if (!equipeId) return
-
-    const channel = supabase
-      .channel(`team-roster:${equipeId}`)
-      .on(
-        'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'profiles', filter: `equipe_id=eq.${equipeId}` },
-        () => void refreshPlayers(),
-      )
-      .on(
-        'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'profiles', filter: `equipe_id=eq.${equipeId}` },
-        () => void refreshPlayers(),
-      )
-      .subscribe()
-
-    return () => {
-      if (supabase) void supabase.removeChannel(channel)
-    }
-  }, [equipeId])
 
   return (
     <section className="page team-page">
@@ -1452,12 +1563,7 @@ function TeamPage({
         <article className="panel roster-list">
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem' }}>
             <h3 style={{ margin: 0 }}>Membres actifs</h3>
-            <button
-              type="button"
-              className="link-button"
-              onClick={() => void refreshPlayers()}
-              disabled={playersBusy}
-            >
+            <button type="button" className="link-button" onClick={() => void refreshPlayers()} disabled={playersBusy}>
               Recharger
             </button>
           </div>
@@ -1480,7 +1586,13 @@ function TeamPage({
                     justifyContent: 'space-between',
                     gap: '0.75rem',
                     alignItems: 'center',
-                    flexWrap: 'wrap'
+                    flexWrap: 'wrap',
+                    cursor: 'pointer'
+                  }}
+                  onClick={(e) => {
+                     // Prevent modal if clicking on select/button
+                     if ((e.target as HTMLElement).tagName === 'SELECT' || (e.target as HTMLElement).tagName === 'BUTTON') return;
+                     setSelectedPlayer(p);
                   }}
                 >
                   <strong style={{ flex: 1 }}>{p.nom}</strong>
@@ -1492,60 +1604,81 @@ function TeamPage({
                         onChange={async (e) => {
                           const newEqId = e.target.value;
                           if (!newEqId || !supabase) return;
-                          if (!confirm(`Voulez-vous vraiment changer la catégorie de ce joueur ?`)) {
-                            e.target.value = equipeId || '';
-                            return;
-                          }
+                          if (!confirm(`Voulez-vous vraiment changer la catégorie ?`)) { e.target.value = equipeId || ''; return; }
                           try {
-                            const { error: err } = await supabase.rpc('approve_ghost_profile', {
-                              p_child_id: p.id,
-                              p_equipe_id: newEqId
-                            });
+                            const { error: err } = await supabase.rpc('approve_ghost_profile', { p_child_id: p.id, p_equipe_id: newEqId });
                             if (err) throw err;
-                            // Remove from current list if moved
-                            if (newEqId !== equipeId) {
-                              setPlayers(prev => prev.filter(x => x.id !== p.id));
-                            }
+                            if (newEqId !== equipeId) setPlayers(prev => prev.filter(x => x.id !== p.id));
                           } catch (err) {
                             alert('Erreur: ' + (err as Error).message);
                             e.target.value = equipeId || '';
                           }
                         }}
-                        style={{ fontSize: '0.8rem', padding: '0.2rem 0.4rem', height: 'auto', background: 'rgba(0,0,0,0.3)' }}
+                        style={{ fontSize: '0.8rem', padding: '0.2rem 0.4rem', background: 'rgba(0,0,0,0.3)' }}
                       >
-                        {adminTeams.map(t => (
-                          <option key={t.id} value={t.id}>{t.categorie} - {t.nom}</option>
-                        ))}
+                        {adminTeams.map(t => <option key={t.id} value={t.id}>{t.categorie}</option>)}
                       </select>
-                      <button
-                        type="button"
-                        className="text-button"
-                        style={{ color: '#ef4444', fontSize: '0.8rem', padding: '0.2rem 0.5rem' }}
-                        onClick={async () => {
+                      <button type="button" className="text-button" style={{ color: '#ef4444', fontSize: '0.8rem' }} onClick={async () => {
                           if (!supabase) return;
-                          if (!confirm(`Voulez-vous vraiment supprimer définitivement le profil de ${p.nom} ? Cette action est irréversible.`)) return;
+                          if (!confirm(`Voulez-vous supprimer définitivement ${p.nom} ?`)) return;
                           try {
                             const { error } = await supabase.from('profiles').delete().eq('id', p.id);
                             if (error) throw error;
                             setPlayers(prev => prev.filter(x => x.id !== p.id));
-                          } catch (err) {
-                            alert('Erreur: ' + (err as Error).message);
-                          }
-                        }}
-                      >
-                        Supprimer
-                      </button>
+                          } catch (err) { alert('Erreur: ' + (err as Error).message); }
+                      }}>Supprimer</button>
                     </div>
                   ) : (
-                    <span className="chip" style={{ fontSize: '0.75rem', background: 'rgba(0, 243, 255, 0.1)' }}>
-                      Joueur
-                    </span>
+                    <span className="chip" style={{ fontSize: '0.75rem', background: 'rgba(0, 243, 255, 0.1)' }}>Joueur</span>
                   )}
                 </div>
               ))}
             </div>
           )}
         </article>
+
+        {selectedPlayer && (
+          <div className="modal-overlay" onClick={() => setSelectedPlayer(null)}>
+            <div className="modal-content" onClick={e => e.stopPropagation()} style={{ maxWidth: '400px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
+                <h3 style={{ margin: 0, color: 'var(--neon-cyan)' }}>{selectedPlayer.nom}</h3>
+                <button className="text-button" onClick={() => setSelectedPlayer(null)}>✕</button>
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'space-around', marginBottom: '2rem', background: 'rgba(0,0,0,0.2)', padding: '1rem', borderRadius: '8px' }}>
+                <div style={{ textAlign: 'center' }}>
+                  <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: 'var(--neon-green)' }}>85%</div>
+                  <div style={{ fontSize: '0.75rem', color: '#a0aec0' }}>Assiduité Mois</div>
+                </div>
+                <div style={{ width: '1px', background: 'rgba(255,255,255,0.1)' }} />
+                <div style={{ textAlign: 'center' }}>
+                  <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: 'var(--neon-cyan)' }}>100%</div>
+                  <div style={{ fontSize: '0.75rem', color: '#a0aec0' }}>Assiduité Semaine</div>
+                </div>
+              </div>
+
+              <h4 style={{ textAlign: 'center', marginBottom: '1rem' }}>Profil Global</h4>
+              
+              <HexagonRadar 
+                levels={[
+                  radarData['Technique'] || 1,
+                  radarData['Tactique'] || 1,
+                  radarData['Physique'] || 1,
+                  radarData['Mental'] || 1,
+                  radarData['Cognitif'] || radarData['Perceptif'] || 1,
+                  playerPerformances[selectedPlayer.id] || 1
+                ]}
+                labels={['Technique', 'Tactique', 'Physique', 'Mental', 'Cognitif', 'Performances']}
+                canEdit={canManage}
+                onPerformancesChange={(v) => setPlayerPerformances(prev => {
+                  const next = { ...prev, [selectedPlayer.id]: v };
+                  localStorage.setItem('playerPerformances', JSON.stringify(next));
+                  return next;
+                })}
+              />
+            </div>
+          </div>
+        )}
       </div>
     </section>
   )
@@ -3128,21 +3261,46 @@ function EventsPage({
           </div>
 
           {addType === 'match' && (
-            <div style={{ display: 'grid', gap: '0.5rem' }}>
-              <strong>Joueurs convoques</strong>
+            <div style={{ display: 'grid', gap: '0.75rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <strong style={{ margin: 0 }}>Joueurs convoqués</strong>
+                {players.length > 0 && (
+                  <button
+                    type="button"
+                    className="link-button"
+                    style={{ fontSize: '0.8rem', padding: '0.2rem 0.5rem' }}
+                    onClick={() => {
+                      // Check if all are already selected
+                      const allSelected = players.every(p => addConvoked[p.id]);
+                      if (allSelected) {
+                        setAddConvoked({}); // Unselect all
+                      } else {
+                        const newConvoked: Record<string, boolean> = {};
+                        players.forEach(p => newConvoked[p.id] = true);
+                        setAddConvoked(newConvoked); // Select all
+                      }
+                    }}
+                    disabled={addBusy}
+                  >
+                    {players.every(p => addConvoked[p.id]) ? 'Tout désélectionner' : 'Tout sélectionner'}
+                  </button>
+                )}
+              </div>
+              
               {players.length === 0 ? (
-                <p className="muted">Aucun joueur visible (verifie RLS + equipe/club).</p>
+                <p className="muted">Aucun joueur visible (vérifie RLS + équipe/club).</p>
               ) : (
-                <div style={{ display: 'grid', gap: '0.35rem', maxHeight: '12rem', overflow: 'auto', paddingRight: '0.25rem' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', maxHeight: '15rem', overflowY: 'auto', paddingRight: '0.25rem', background: 'rgba(0, 0, 0, 0.2)', padding: '0.75rem', borderRadius: '8px' }}>
                   {players.map((p) => (
-                    <label key={p.id} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <label key={p.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-start', gap: '0.75rem', cursor: 'pointer', margin: 0 }}>
                       <input
                         type="checkbox"
                         checked={Boolean(addConvoked[p.id])}
                         onChange={(e) => setAddConvoked((c) => ({ ...c, [p.id]: e.target.checked }))}
                         disabled={addBusy}
+                        style={{ margin: 0, width: '1.2rem', height: '1.2rem', flexShrink: 0 }}
                       />
-                      <span>{p.nom}</span>
+                      <span style={{ textAlign: 'left', wordBreak: 'break-word' }}>{p.nom}</span>
                     </label>
                   ))}
                 </div>
